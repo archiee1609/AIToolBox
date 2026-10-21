@@ -51,8 +51,18 @@ async def get_default_workflow():
 async def generate_image(req: ImageGenerateRequest):
     return await comfyui_service.generate_image(req)
 
+@router.post("/sync")
+async def sync_images():
+    recovered = await comfyui_service.sync_external_outputs()
+    return {"status": "synced", "recovered_count": len(recovered), "files": recovered}
+
 @router.get("/history")
 async def get_image_history(limit: int = Query(50, ge=1, le=100)):
+    # Auto-sync any completed ComfyUI renders that finished in background
+    try:
+        await comfyui_service.sync_external_outputs()
+    except Exception:
+        pass
     rows = await db.fetchall(
         """
         SELECT * FROM image_history

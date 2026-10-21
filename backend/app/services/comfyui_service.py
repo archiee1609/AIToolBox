@@ -1,12 +1,15 @@
 import os
 import sys
+import re
 import json
 import uuid
+import time
+import shutil
 import asyncio
 import datetime
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import httpx
 
 from app.core.config import settings
@@ -24,8 +27,8 @@ DEFAULT_COMFYUI_WORKFLOW = {
             "model": ["4", 0],
             "negative": ["7", 0],
             "positive": ["6", 0],
-            "sampler_name": "euler",
-            "scheduler": "normal",
+            "sampler_name": "dpmpp_2m",
+            "scheduler": "karras",
             "seed": 42,
             "steps": 20
         }
@@ -95,6 +98,131 @@ POPULAR_MODELS = {
     }
 }
 
+def parse_resolution_from_prompt(prompt: str, default_width: int = 512, default_height: int = 512) -> Tuple[int, int]:
+    """
+    Extracts target width and height from user prompt text.
+    Handles:
+    - Direct dimensions: 1024x768, 1024 x 768, 1024*768, 1920x1080, 512x512, width 1024 height 768
+    - Aspect ratios: 16:9, 9:16, 4:3, 3:4, 21:9, 1:1, --ar 16:9
+    - Common orientation keywords: landscape, portrait, wallpaper, widescreen, square
+    
+    Ensures dimensions are bounded between 256 and 1280 and are multiples of 8 for VAE compatibility.
+    """
+    if not prompt:
+        return (default_width, default_height)
+
+    # 1. Direct dimensions: 1024x768, 1024 x 768, 1024*768, 1024 by 768
+    dim_match = re.search(r'\b(\d{3,4})\s*(?:[xX*×]|by)\s*(\d{3,4})\b', prompt)
+    if not dim_match:
+        # Also check "width: 1024, height: 768" or "w: 1024 h: 768"
+        dim_match = re.search(r'(?:width|w)[:=\s]+(\d{3,4})[,\s]+(?:height|h)[:=\s]+(\d{3,4})', prompt, re.IGNORECASE)
+
+    if dim_match:
+        w = int(dim_match.group(1))
+        h = int(dim_match.group(2))
+        
+        # Scale proportionally if either dimension exceeds 1280 (to prevent CPU OOM)
+        max_dim = 1280
+        if w > max_dim or h > max_dim:
+            scale = max_dim / max(w, h)
+            w = int(w * scale)
+            h = int(h * scale)
+        
+        w = max(256, min(1280, w))
+        h = max(256, min(1280, h))
+        w = (w // 8) * 8
+        h = (h // 8) * 8
+        return (w, h)
+
+    # 2. Aspect ratios: 16:9, 9:16, 4:3, 3:4, 21:9, 1:1, --ar 16:9
+    ar_match = re.search(r'(?:--ar\s+|aspect\s+ratio\s*[:=]?\s*|\b)(\d{1,2})\s*[:/]\s*(\d{1,2})\b', prompt, re.IGNORECASE)
+    if ar_match:
+        ar_w = int(ar_match.group(1))
+        ar_h = int(ar_match.group(2))
+        if ar_w > 0 and ar_h > 0:
+            ratio = ar_w / ar_h
+            if abs(ratio - 16 / 9) < 0.05:
+                return (896, 512)
+            elif abs(ratio - 9 / 16) < 0.05:
+                return (512, 896)
+            elif abs(ratio - 4 / 3) < 0.05:
+                return (768, 576)
+            elif abs(ratio - 3 / 4) < 0.05:
+                return (576, 768)
+            elif abs(ratio - 21 / 9) < 0.05:
+                return (1024, 448)
+            elif abs(ratio - 1.0) < 0.05:
+                return (512, 512)
+
+    # 3. Descriptive orientation keywords
+    p_lower = prompt.lower()
+    if any(k in p_lower for k in ["wallpaper", "widescreen", "ultrawide", "cinematic", "horizontal", "landscape"]):
+        return (768, 512)
+    elif any(k in p_lower for k in ["portrait", "vertical", "phone wallpaper", "mobile wallpaper"]):
+        return (512, 768)
+    elif "square" in p_lower:
+        return (512, 512)
+
+    return (default_width, default_height)
+
+STYLE_PRESETS: Dict[str, Dict[str, str]] = {
+    "None": {
+        "positive": "",
+        "negative": ""
+    },
+    "Photorealistic": {
+        "positive": "photorealistic, 8k uhd, highly detailed, professional photography, soft lighting, 35mm lens, sharp focus, masterpiece",
+        "negative": "cartoon, 3d, illustration, drawing, painting, bad anatomy, deformed, blurry, lowres, watermark"
+    },
+    "Cinematic": {
+        "positive": "cinematic film still, 35mm photograph, dramatic lighting, depth of field, high contrast, atmospheric, 8k resolution",
+        "negative": "anime, cartoon, sketch, low quality, oversaturated, amateur, blurry"
+    },
+    "Cyberpunk": {
+        "positive": "cyberpunk aesthetic, volumetric neon lighting, intricate tech details, reflections, ray tracing, dark futuristic mood, 8k",
+        "negative": "pastoral, vintage, sepia, dull colors, low quality, blurry, deformed"
+    },
+    "Digital Art": {
+        "positive": "stunning digital art, trending on artstation, highly detailed illustration, dynamic composition, vibrant color palette",
+        "negative": "low quality, photo, amateur, messy sketch, deformed, blurry"
+    },
+    "Anime / Ghibli": {
+        "positive": "anime masterpiece, studio ghibli aesthetic, vibrant colors, makoto shinkai lighting, clean lineart, high detail",
+        "negative": "photorealistic, 3d render, gritty, ugly, bad anatomy, low quality"
+    }
+}
+
+DEFAULT_NEGATIVE_PROMPT: str = (
+    "worst quality, low quality, normal quality, lowres, bad anatomy, bad hands, missing fingers, "
+    "extra digit, fewer digits, cropped, signature, watermark, username, blurry, artist name, duplicate, "
+    "morbid, mutilated, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, "
+    "deformed, ugly, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs"
+)
+
+def calculate_optimal_base_dimensions(target_w: int, target_h: int) -> Tuple[int, int, bool]:
+    """
+    Given target user resolution, calculates the optimal base generation resolution for SD 1.5
+    to prevent multi-object tiling and distortion, and returns whether upscaling is needed.
+    """
+    total_pixels = target_w * target_h
+    # SD 1.5 native budget is around 512x512 = 262,144 pixels (safe up to ~393,216 pixels, e.g. 768x512)
+    if total_pixels <= 768 * 512:
+        return (target_w, target_h, False)
+
+    ratio = target_w / target_h
+    # Target base pixel budget ~512*512 = 262,144
+    target_area = 512 * 512
+    base_w = int(round((target_area * ratio) ** 0.5 / 64.0) * 64)
+    base_h = int(round((target_area / ratio) ** 0.5 / 64.0) * 64)
+    
+    # Bound base dimensions to SD 1.5 sweet spot
+    base_w = max(384, min(768, base_w))
+    base_h = max(384, min(768, base_h))
+    base_w = (base_w // 8) * 8
+    base_h = (base_h // 8) * 8
+    
+    return (base_w, base_h, True)
+
 class ComfyUIService:
     def __init__(self, base_url: Optional[str] = None):
         self.base_url = (base_url or settings.comfyui_base_url).rstrip("/")
@@ -102,8 +230,41 @@ class ComfyUIService:
         self.comfy_main = self.comfy_dir / "main.py"
         self.checkpoints_dir = self.comfy_dir / "models" / "checkpoints"
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        self.comfy_output_dir = self.comfy_dir / "output"
+        self.comfy_output_dir.mkdir(parents=True, exist_ok=True)
         self._process: Optional[subprocess.Popen] = None
         self.download_state: Optional[Dict[str, Any]] = None
+
+    async def sync_external_outputs(self) -> List[str]:
+        """Scans ComfyUI output folder for completed renders and catalogs them into image_history if not present."""
+        recovered = []
+        if not self.comfy_output_dir.exists():
+            return recovered
+        
+        try:
+            png_files = sorted(self.comfy_output_dir.glob("AIToolBox_*.png"), key=lambda f: f.stat().st_mtime, reverse=True)
+            for f in png_files:
+                if f.stat().st_size < 1024:
+                    continue
+                # Check if already present in database
+                row = await db.fetchone("SELECT id, image_filename FROM image_history WHERE image_filename LIKE ? OR image_filename = ?", (f"%{f.name}%", f.name))
+                if not row:
+                    job_id = str(uuid.uuid4())
+                    local_filename = f"gen_{job_id[:8]}_{f.name}"
+                    dest_path = settings.generated_images_dir / local_filename
+                    shutil.copy2(f, dest_path)
+                    now_str = datetime.datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+                    await db.execute(
+                        """
+                        INSERT INTO image_history (id, prompt, negative_prompt, status, image_filename, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (job_id, f"Recovered render ({f.name})", "", "completed", local_filename, now_str)
+                    )
+                    recovered.append(local_filename)
+        except Exception as ex:
+            logger.warning(f"Error during ComfyUI output sync: {ex}")
+        return recovered
 
     def get_local_checkpoints(self) -> List[str]:
         """Lists checkpoint files present in ComfyUI/models/checkpoints/ directory."""
@@ -352,16 +513,65 @@ class ComfyUIService:
         # Checkpoint
         workflow["4"]["inputs"]["ckpt_name"] = chosen_checkpoint
 
-        # Positive & Negative prompts
-        workflow["6"]["inputs"]["text"] = req.prompt
-        workflow["7"]["inputs"]["text"] = req.negative_prompt or ""
+        # Style preset & quality prompt enhancement
+        style_key = getattr(req, "style_preset", "None") or "None"
+        preset = STYLE_PRESETS.get(style_key, STYLE_PRESETS["None"])
 
-        # Dimensions
-        workflow["5"]["inputs"]["width"] = req.width
-        workflow["5"]["inputs"]["height"] = req.height
+        pos_parts = [req.prompt.strip()]
+        if preset.get("positive"):
+            pos_parts.append(preset["positive"])
+        if getattr(req, "enhance_prompt", True):
+            p_lower = req.prompt.lower()
+            if not any(k in p_lower for k in ["masterpiece", "8k", "highly detailed", "photorealistic"]):
+                pos_parts.append("masterpiece, highly detailed, sharp focus, professional lighting, photorealistic")
+        final_pos = ", ".join(pos_parts)
 
-        # Sampling parameters
-        workflow["3"]["inputs"]["steps"] = req.steps or 20
+        neg_parts = []
+        if req.negative_prompt and req.negative_prompt.strip():
+            neg_parts.append(req.negative_prompt.strip())
+        else:
+            neg_parts.append(DEFAULT_NEGATIVE_PROMPT)
+        if preset.get("negative"):
+            neg_parts.append(preset["negative"])
+        final_neg = ", ".join(neg_parts)
+
+        workflow["6"]["inputs"]["text"] = final_pos
+        workflow["7"]["inputs"]["text"] = final_neg
+
+        # Auto-detect resolution from prompt (e.g. 1024x768, 16:9, landscape, portrait)
+        parsed_w, parsed_h = parse_resolution_from_prompt(req.prompt, default_width=req.width, default_height=req.height)
+
+        # Calculate optimal base resolution for SD 1.5 to prevent multi-object tiling and distortion
+        base_w, base_h, needs_upscale = calculate_optimal_base_dimensions(parsed_w, parsed_h)
+
+        workflow["5"]["inputs"]["width"] = base_w
+        workflow["5"]["inputs"]["height"] = base_h
+
+        # High-quality upscale if requested resolution exceeds native base
+        if needs_upscale:
+            workflow["10"] = {
+                "class_type": "ImageScale",
+                "inputs": {
+                    "image": ["8", 0],
+                    "upscale_method": "lanczos",
+                    "width": parsed_w,
+                    "height": parsed_h,
+                    "crop": "disabled"
+                }
+            }
+            workflow["9"]["inputs"]["images"] = ["10", 0]
+        else:
+            workflow["9"]["inputs"]["images"] = ["8", 0]
+
+        # Sampler & Scheduler (default to dpmpp_2m + karras for dramatically higher detail)
+        sampler_name = getattr(req, "sampler_name", None) or "dpmpp_2m"
+        scheduler = getattr(req, "scheduler", None) or "karras"
+        valid_samplers = {"dpmpp_2m", "euler_ancestral", "euler", "ddim", "dpmpp_sde", "uni_pc"}
+        valid_schedulers = {"karras", "normal", "exponential", "simple", "sgm_uniform"}
+
+        workflow["3"]["inputs"]["sampler_name"] = sampler_name if sampler_name in valid_samplers else "dpmpp_2m"
+        workflow["3"]["inputs"]["scheduler"] = scheduler if scheduler in valid_schedulers else "karras"
+        workflow["3"]["inputs"]["steps"] = max(12, req.steps or 20)
         workflow["3"]["inputs"]["cfg"] = req.cfg_scale or 7.0
 
         # Seed
@@ -428,6 +638,11 @@ class ComfyUIService:
                 created_at=now
             )
 
+        # Auto-parse resolution from prompt if provided in text
+        parsed_w, parsed_h = parse_resolution_from_prompt(req.prompt, default_width=req.width, default_height=req.height)
+        req.width = parsed_w
+        req.height = parsed_h
+
         # 3. Build workflow graph
         workflow = self.build_workflow(req, chosen_ckpt)
         seed_used = workflow["3"]["inputs"]["seed"]
@@ -464,13 +679,25 @@ class ComfyUIService:
             data = prompt_res.json()
             prompt_id = data.get("prompt_id")
 
-            # 5. Poll history for rendered output image
+            # 5. Poll history for rendered output image (up to 360 seconds for CPU rendering)
             output_image_filename = None
-            for _ in range(90): # Poll for up to 90 seconds
+            start_poll_time = time.time()
+            render_error = None
+
+            for poll_idx in range(360):
                 try:
-                    hist_res = await client.get(f"{self.base_url}/history/{prompt_id}")
+                    hist_res = await client.get(f"{self.base_url}/history/{prompt_id}", timeout=15.0)
                     if hist_res.status_code == 200:
                         hist_data = hist_res.json().get(prompt_id, {})
+                        
+                        # Check if ComfyUI reported an execution error
+                        status_info = hist_data.get("status", {})
+                        if status_info.get("status_str") == "error":
+                            messages = status_info.get("messages", [])
+                            render_error = f"ComfyUI engine reported execution error: {messages}"
+                            logger.error(render_error)
+                            break
+
                         outputs = hist_data.get("outputs", {})
                         for node_id, node_output in outputs.items():
                             images = node_output.get("images", [])
@@ -479,27 +706,55 @@ class ComfyUIService:
                                 src_filename = img_info.get("filename")
                                 subfolder = img_info.get("subfolder", "")
                                 img_type = img_info.get("type", "output")
+                                local_filename = f"gen_{job_id[:8]}_{src_filename}"
+                                dest_path = settings.generated_images_dir / local_filename
 
-                                # Fetch image binary from ComfyUI view API
+                                # 1. Try instantaneous direct filesystem copy from ComfyUI output directory
+                                direct_path = (self.comfy_output_dir / subfolder / src_filename).resolve()
+                                if direct_path.exists() and direct_path.stat().st_size > 1024:
+                                    shutil.copy2(direct_path, dest_path)
+                                    output_image_filename = local_filename
+                                    break
+
+                                # 2. Fallback: fetch via ComfyUI /view API
                                 view_res = await client.get(
                                     f"{self.base_url}/view",
-                                    params={"filename": src_filename, "subfolder": subfolder, "type": img_type}
+                                    params={"filename": src_filename, "subfolder": subfolder, "type": img_type},
+                                    timeout=30.0
                                 )
-                                if view_res.status_code == 200:
-                                    local_filename = f"gen_{job_id[:8]}_{src_filename}"
-                                    dest_path = settings.generated_images_dir / local_filename
+                                if view_res.status_code == 200 and len(view_res.content) > 0:
                                     dest_path.write_bytes(view_res.content)
                                     output_image_filename = local_filename
                                     break
-                except Exception:
-                    pass
+                except Exception as ex:
+                    logger.debug(f"History poll exception at tick {poll_idx}: {ex}")
 
                 if output_image_filename:
                     break
+
+                # 3. Direct filesystem detection fallback: inspect output folder for recently generated AIToolBox_*.png
+                if poll_idx >= 5 and poll_idx % 4 == 0:
+                    try:
+                        recent_pngs = sorted(
+                            [f for f in self.comfy_output_dir.glob("AIToolBox_*.png") if f.stat().st_mtime >= start_poll_time - 5.0],
+                            key=lambda f: f.stat().st_mtime,
+                            reverse=True
+                        )
+                        if recent_pngs:
+                            latest_png = recent_pngs[0]
+                            if latest_png.stat().st_size > 10000:
+                                local_filename = f"gen_{job_id[:8]}_{latest_png.name}"
+                                dest_path = settings.generated_images_dir / local_filename
+                                shutil.copy2(latest_png, dest_path)
+                                output_image_filename = local_filename
+                                break
+                    except Exception as fs_ex:
+                        logger.debug(f"Direct filesystem poll exception: {fs_ex}")
+
                 await asyncio.sleep(1.0)
 
             if not output_image_filename:
-                err_msg = "Image generation was queued but timed out while waiting for output rendering."
+                err_msg = render_error or "Image generation was queued but timed out while waiting for output rendering on CPU."
                 await db.execute(
                     """
                     INSERT INTO image_history (id, prompt, negative_prompt, status, error, image_filename, created_at)

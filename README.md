@@ -9,15 +9,15 @@
 **Local AI Workbench** is a Windows-first, local-first workstation that delivers comprehensive AI capabilities through a single unified interface:
 
 1. **All-in-One Power Studio (Flagship Tab)**: Unified power chat combining conversational AI, in-chat image generation (`/image`), executive report generation (`/report`), coding assistance (`/code`), vision understanding, and tool execution in a single thread.
-2. **LLM Model Installation & Management**: Built-in provision to discover, pull, and install any model from the Ollama library (`llama3.2`, `mistral`, `deepseek-r1:14b`, `qwen2.5-coder`, `phi4`, `llava`, etc.) with real-time SSE progress tracking.
-3. **Report Generator Engine**: Generates executive summaries, codebase architecture audits, and test compliance reports with 1-click Markdown export and workspace saving.
-4. **General-Purpose AI Chatbot**: Real-time streaming conversation with locally hosted Ollama models (`gemma4:12b`, `gpt-oss:latest`), conversation persistence, search, editing, and parameter tuning.
-5. **AI Assistant with Practical Tools**: Sandboxed backend tool execution loop with Calculator, DateTime, File Read/Search, Document Summarizer, JSON Validator, File Creator, Test Runner, and Git status inspection.
-6. **Local Image-Generation & Understanding Workspace**:
-   - **Image Lab**: Native adapter for local ComfyUI instance with prompt graph submission, checkpoint selection, progress tracking, and local image gallery persistence.
-   - **Vision**: Image-understanding workspace supporting visual inputs on compatible multimodal models (such as `gemma4:12b`).
-7. **Coding Agent**: Workspace inspection, unified diff computation, human-in-the-loop approval workflow, safe file patching, sandboxed test execution (`pytest`), and Git diff tracking.
-8. **Workflow Automation Engine**: Structured multi-step automation pipelines (read files, extract text, summarize with LLM, write output, run tests) with dry-run previews and execution audit trails.
+2. **🧠 Multi-AI Tool Memory Hub**: Import, manage, and toggle persistent memory snippets from **ChatGPT**, **Claude**, **Cursor**, **GitHub Copilot**, and **Gemini**. Active memories are automatically composed and injected into local Ollama system prompts.
+3. **🎨 Auto-Starting ComfyUI Image Lab**: Native adapter for local ComfyUI. Automatically starts alongside the Ollama server with hardware-adaptive `--cpu --use-split-cross-attention` flags, checkpoint selector, progress tracking, and local image gallery persistence.
+4. **LLM Model Installation & Management**: Built-in provision to discover, pull, and install any model from the Ollama library (`llama3.2`, `mistral`, `deepseek-r1:14b`, `qwen2.5-coder`, `phi4`, `llava`, etc.) with real-time SSE progress tracking.
+5. **Report Generator Engine**: Generates executive summaries, codebase architecture audits, and test compliance reports with 1-click Markdown export and workspace saving.
+6. **General-Purpose AI Chatbot**: Real-time streaming conversation with locally hosted Ollama models (`llama3.2:latest`, `gemma4:12b`, `gpt-oss:latest`), conversation persistence, search, editing, and parameter tuning.
+7. **AI Assistant with Practical Tools**: Sandboxed backend tool execution loop with Calculator, DateTime, File Read/Search, Document Summarizer, JSON Validator, File Creator, Test Runner, and Git status inspection.
+8. **Vision Multimodal Studio**: Image-understanding workspace supporting visual inputs on compatible multimodal models (such as `llama3.2:latest` or `gemma4:12b`).
+9. **Coding Agent**: Workspace inspection, unified diff computation, human-in-the-loop approval workflow, safe file patching, sandboxed test execution (`pytest`), and Git diff tracking.
+10. **Native Streamlit Interface**: Clean, professional, pure light-mode Streamlit dashboard with tabs for All-in-One Studio, Memory Hub, ComfyUI Image Lab, Coding Agent, Vision, and Tools.
 
 ---
 
@@ -40,7 +40,26 @@ scripts\install.bat
 ```
 
 ### 3. Launching the Application
-Launch both backend services and open your browser:
+
+You have two frontend experiences sharing the same local database, memories, models, and ComfyUI pipeline:
+
+#### Option A: Streamlit Native App (Recommended)
+Launch the pure light-mode Streamlit Workbench:
+```cmd
+scripts\start_streamlit.bat
+```
+*Or using PowerShell:*
+```powershell
+.\scripts\start_streamlit.ps1
+```
+*Or directly via Streamlit:*
+```powershell
+streamlit run streamlit_app.py
+```
+The Streamlit Workbench will open at **[http://127.0.0.1:8501](http://127.0.0.1:8501)**.
+
+#### Option B: FastAPI + React SPA
+Launch the full-stack FastAPI + React interface:
 ```cmd
 scripts\start.bat
 ```
@@ -48,9 +67,9 @@ scripts\start.bat
 ```powershell
 .\scripts\start.ps1
 ```
-The Workbench will open at **[http://127.0.0.1:8000](http://127.0.0.1:8000)**.
+The Web Workbench will open at **[http://127.0.0.1:8000](http://127.0.0.1:8000)**.
 
-To stop running instances at any time:
+To stop all running background instances (FastAPI, Streamlit, ComfyUI):
 ```cmd
 scripts\stop.bat
 ```

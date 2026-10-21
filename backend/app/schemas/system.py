@@ -28,6 +28,7 @@ class SystemSettings(BaseModel):
     default_context_length: int
     enable_web_search: bool
     theme: str = "dark"
+    system_instruction: Optional[str] = None
 
 class BackupResponse(BaseModel):
     filename: str

@@ -4,7 +4,7 @@ $ErrorActionPreference = "SilentlyContinue"
 Write-Host "[*] Stopping running Workbench and ComfyUI backend processes..." -ForegroundColor Yellow
 
 $procs = Get-Process -Name python, node -ErrorAction SilentlyContinue | Where-Object {
-    $_.CommandLine -like "*app.main*" -or $_.CommandLine -like "*backend\run.py*" -or $_.CommandLine -like "*ComfyUI\main.py*"
+    $_.CommandLine -like "*app.main*" -or $_.CommandLine -like "*backend\run.py*" -or $_.CommandLine -like "*streamlit*" -or $_.CommandLine -like "*ComfyUI\main.py*"
 }
 
 if ($procs) {

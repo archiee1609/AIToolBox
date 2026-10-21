@@ -20,6 +20,8 @@ router = APIRouter(prefix="/settings", tags=["Application Settings & Memory"])
 async def get_settings():
     theme_row = await db.fetchone("SELECT value FROM user_preferences WHERE key = 'theme'")
     theme = theme_row["value"] if theme_row else "dark"
+    sys_inst_row = await db.fetchone("SELECT value FROM user_preferences WHERE key = 'system_instruction'")
+    sys_inst = sys_inst_row["value"] if sys_inst_row else "You are Local AI Workbench, an all-in-one expert assistant for coding, reasoning, reports, and data analysis."
     
     return SystemSettings(
         ollama_base_url=settings.ollama_base_url,
@@ -29,7 +31,8 @@ async def get_settings():
         default_temperature=settings.default_temperature,
         default_context_length=settings.default_context_length,
         enable_web_search=settings.enable_web_search,
-        theme=theme
+        theme=theme,
+        system_instruction=sys_inst
     )
 
 @router.patch("", response_model=SystemSettings)
@@ -54,6 +57,15 @@ async def update_settings(payload: Dict[str, Any]):
             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
             """,
             (payload["theme"],)
+        )
+    if "system_instruction" in payload:
+        await db.execute(
+            """
+            INSERT INTO user_preferences (key, value, updated_at)
+            VALUES ('system_instruction', ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            """,
+            (str(payload["system_instruction"]),)
         )
 
     return await get_settings()

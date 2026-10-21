@@ -89,3 +89,15 @@ def test_reports_endpoint_validation():
     res = client.post("/api/reports/generate", json={})
     assert res.status_code == 422
 
+def test_parse_resolution_from_prompt():
+    from app.services.comfyui_service import parse_resolution_from_prompt
+    assert parse_resolution_from_prompt("A futuristic workstation 1024x768 with neon lights") == (1024, 768)
+    assert parse_resolution_from_prompt("A workstation with 1024 x 768 resolution") == (1024, 768)
+    assert parse_resolution_from_prompt("cyberpunk city width: 1024, height: 768") == (1024, 768)
+    assert parse_resolution_from_prompt("mountain view, 16:9") == (896, 512)
+    assert parse_resolution_from_prompt("robot portrait, 9:16") == (512, 896)
+    assert parse_resolution_from_prompt("photo of a warrior, portrait") == (512, 768)
+    assert parse_resolution_from_prompt("medieval castle landscape") == (768, 512)
+    assert parse_resolution_from_prompt("cute kitten") == (512, 512)
+
+

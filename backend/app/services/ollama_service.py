@@ -161,6 +161,62 @@ class OllamaService:
                     except json.JSONDecodeError:
                         pass
 
+    async def chat_stream(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        context_length: int = 8192,
+        options: Optional[Dict[str, Any]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        timeout: float = 180.0
+    ) -> AsyncGenerator[str, None]:
+        """Convenience generator yielding stream text chunks directly."""
+        opts = options or {"temperature": temperature, "num_ctx": context_length}
+        async for chunk in self.stream_chat(model=model, messages=messages, options=opts, tools=tools, timeout=timeout):
+            msg = chunk.get("message", {})
+            token = msg.get("content", "")
+            if token:
+                yield token
+
+    async def generate(
+        self,
+        model: str,
+        prompt: str,
+        system: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        temperature: float = 0.7,
+        context_length: int = 8192,
+        options: Optional[Dict[str, Any]] = None,
+        timeout: float = 180.0
+    ) -> Any:
+        """Executes a completion prompt with optional image embeddings."""
+        payload: Dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "options": options or {"temperature": temperature, "num_ctx": context_length}
+        }
+        if system:
+            payload["system"] = system
+        if images:
+            payload["images"] = images
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            res = await client.post(f"{self.base_url}/api/generate", json=payload)
+            if res.status_code != 200:
+                raise RuntimeError(f"Ollama generate error HTTP {res.status_code}: {res.text}")
+            data = res.json()
+            class GenerateResult:
+                def __init__(self, raw: Dict[str, Any]):
+                    self.raw = raw
+                    self.response = raw.get("response", "")
+                def __getitem__(self, item):
+                    return self.raw[item]
+                def get(self, item, default=None):
+                    return self.raw.get(item, default)
+            return GenerateResult(data)
+
     async def pull_model(
         self,
         model_name: str,

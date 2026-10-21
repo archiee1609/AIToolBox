@@ -11,6 +11,10 @@ class ImageGenerateRequest(BaseModel):
     cfg_scale: Optional[float] = Field(default=7.0, ge=1.0, le=30.0)
     checkpoint: Optional[str] = None
     workflow_id: Optional[str] = "default"
+    sampler_name: Optional[str] = "dpmpp_2m"
+    scheduler: Optional[str] = "karras"
+    style_preset: Optional[str] = "None"
+    enhance_prompt: Optional[bool] = True
 
 class ImageGenerateResponse(BaseModel):
     id: str
