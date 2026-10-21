@@ -6329,3 +6329,6 @@ time=2026-10-21T15:35:00.216+05:30 level=WARN source=runner.go:364 msg="unable t
 time=2026-10-21T15:35:00.216+05:30 level=WARN source=runner.go:584 msg="llama-server GPU discovery watchdog timed out" OLLAMA_LIBRARY_PATH="[C:\\Users\\achakrabort4\\AppData\\Local\\Programs\\Ollama\\lib\\ollama C:\\Users\\achakrabort4\\AppData\\Local\\Programs\\Ollama\\lib\\ollama\\cuda_v13]" extra_envs=map[CUDA_VISIBLE_DEVICES:0] error="context deadline exceeded"
 time=2026-10-21T15:35:00.216+05:30 level=INFO source=runner.go:522 msg="failure during llama-server GPU discovery" OLLAMA_LIBRARY_PATH="[C:\\Users\\achakrabort4\\AppData\\Local\\Programs\\Ollama\\lib\\ollama C:\\Users\\achakrabort4\\AppData\\Local\\Programs\\Ollama\\lib\\ollama\\cuda_v13]" extra_envs=map[CUDA_VISIBLE_DEVICES:0] error="context deadline exceeded" detail=""
 time=2026-10-21T15:35:00.216+05:30 level=WARN source=runner.go:364 msg="unable to refresh free memory, using old values"
+[GIN] 2026/10/21 - 17:37:30 | 200 |            0s |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/10/21 - 17:37:30 | 200 |            0s |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/10/21 - 17:37:30 | 200 |    112.8347ms |       127.0.0.1 | GET      "/api/tags"
