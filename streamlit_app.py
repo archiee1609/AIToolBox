@@ -70,6 +70,7 @@ from app.services.ollama_service import ollama_service
 from app.services.comfyui_service import comfyui_service, POPULAR_MODELS, parse_resolution_from_prompt, STYLE_PRESETS
 from app.services.tool_registry import tool_registry
 from app.services.coding_agent_service import coding_agent_service
+from app.services.document_service import process_uploaded_files, extract_file_data
 from app.schemas.image import ImageGenerateRequest
 
 # Helper to execute async functions in Streamlit safely
@@ -1086,30 +1087,82 @@ if selected_page == "💬 All-in-One Studio":
             if st.button("💻 Autonomous Coding Agent\n\nInspect files, propose diffs, and run tests with /code", use_container_width=True):
                 st.session_state.prompt_input = "/code review workspace files and run pytest suite"
 
-    # Multimodal image attachment
-    with st.expander("📎 Attach image for multimodal vision inspection (optional)", expanded=False):
-        uploaded_image = st.file_uploader("Upload Image", type=["png", "jpg", "jpeg", "webp"], key="chat_image_uploader")
+    # Multimodal & document file attachment expander (supports up to 5 files: PDF, Word, Code, Images)
+    with st.expander("📎 File Attachment Drawer (Supports up to 5 files: PDF, DOCX, Code, Images)", expanded=False):
+        drawer_files = st.file_uploader(
+            "Select or drop up to 5 files",
+            accept_multiple_files=True,
+            key="chat_drawer_file_uploader",
+            help="Upload up to 5 resumes, job descriptions, PDF/Word documents, code files, or images. You can also click the 📎 paperclip directly inside the chat input bar below!"
+        )
 
     # Render Conversation History
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             if msg.get("images"):
-                for img_data in msg["images"]:
-                    st.image(img_data, width=300)
-            st.markdown(msg["content"])
+                cols_hist = st.columns(min(len(msg["images"]), 3))
+                for i, img_data in enumerate(msg["images"]):
+                    cols_hist[i % len(cols_hist)].image(img_data, use_container_width=True)
+            st.markdown(msg["content"], unsafe_allow_html=True)
 
-    # Chat Input Box
+    # Chat Input Box (Native paperclip support for uploading up to 5 files)
     default_prompt = st.session_state.pop("prompt_input", "")
-    user_prompt = st.chat_input("Ask anything, or use /image <prompt>, /report <topic>, /code <task>...", key="main_chat_input")
-    prompt_to_use = user_prompt or default_prompt
+    chat_submission = st.chat_input(
+        "Ask anything, attach up to 5 files (PDF, Word, Code, Images), or use /image, /report, /code...",
+        accept_file="multiple",
+        key="main_chat_input"
+    )
 
-    if prompt_to_use:
-        # User message
-        attached_b64 = []
-        if uploaded_image:
-            import base64
-            b64 = base64.b64encode(uploaded_image.getvalue()).decode("utf-8")
-            attached_b64.append(f"data:image/png;base64,{b64}")
+    # Extract submission content from chat input
+    user_text = ""
+    incoming_files = []
+
+    if chat_submission is not None:
+        if hasattr(chat_submission, "text"):
+            user_text = chat_submission.text or ""
+        elif isinstance(chat_submission, dict):
+            user_text = chat_submission.get("text", "")
+        elif isinstance(chat_submission, str):
+            user_text = chat_submission
+
+        if hasattr(chat_submission, "files"):
+            incoming_files = list(chat_submission.files or [])
+        elif isinstance(chat_submission, dict):
+            incoming_files = list(chat_submission.get("files", []))
+
+    # Also include any files selected in the attachment drawer
+    if drawer_files:
+        for df in drawer_files:
+            if not any(f.name == df.name for f in incoming_files):
+                incoming_files.append(df)
+
+    # Cap to maximum 5 files at once
+    if len(incoming_files) > 5:
+        st.toast("⚠️ Maximum 5 files can be attached at once. Processing the first 5 files.", icon="⚠️")
+        incoming_files = incoming_files[:5]
+
+    prompt_to_use = user_text or default_prompt
+    if not prompt_to_use.strip() and incoming_files:
+        prompt_to_use = "Please review, summarize, and analyze the attached document(s)."
+
+    if prompt_to_use or incoming_files:
+        # Process attached files (up to 5) via document service
+        file_proc = process_uploaded_files(incoming_files, max_files=5)
+        attached_images_b64 = file_proc["attached_images_b64"]
+        raw_images_b64 = file_proc["raw_images_b64"]
+        attached_docs_context = file_proc["attached_docs_context"]
+        pills_summary = file_proc["pills_summary"]
+        collapsible_html = file_proc["collapsible_html"]
+
+        # Prepare saved and displayed message
+        display_parts = []
+        if pills_summary:
+            display_parts.append(pills_summary + "\n")
+        display_parts.append(prompt_to_use)
+        if collapsible_html:
+            display_parts.append(collapsible_html)
+
+        final_user_content = "\n".join(display_parts)
 
         # Check if conversation needs an automatic descriptive title (like ChatGPT / Gemini)
         if active_title in ["New Chat", "New Conversation"] and not st.session_state.messages:
@@ -1118,18 +1171,21 @@ if selected_page == "💬 All-in-One Studio":
                 update_conversation_title(st.session_state["active_conv_id"], auto_title)
 
         # Save user message to persistent SQLite
-        save_chat_message(st.session_state["active_conv_id"], "user", prompt_to_use, attached_b64)
+        save_chat_message(st.session_state["active_conv_id"], "user", final_user_content, attached_images_b64)
 
         st.session_state.messages.append({
             "role": "user",
-            "content": prompt_to_use,
-            "images": attached_b64
+            "content": final_user_content,
+            "images": attached_images_b64,
+            "raw_images": raw_images_b64
         })
 
         with st.chat_message("user"):
-            if attached_b64:
-                st.image(uploaded_image, width=300)
-            st.markdown(prompt_to_use)
+            if attached_images_b64:
+                cols_img = st.columns(min(len(attached_images_b64), 3))
+                for i, img_uri in enumerate(attached_images_b64):
+                    cols_img[i % len(cols_img)].image(img_uri, use_container_width=True)
+            st.markdown(final_user_content, unsafe_allow_html=True)
 
         # Assistant processing
         with st.chat_message("assistant"):
@@ -1262,7 +1318,10 @@ if selected_page == "💬 All-in-One Studio":
                 # Format conversation history for Ollama
                 ollama_messages = [{"role": "system", "content": effective_system}]
                 for m in st.session_state.messages[-10:]:
-                    ollama_messages.append({"role": m["role"], "content": m["content"]})
+                    msg_item = {"role": m["role"], "content": m["content"]}
+                    if m.get("raw_images"):
+                        msg_item["images"] = m["raw_images"]
+                    ollama_messages.append(msg_item)
 
                 # Stream response with animated status
                 response_placeholder = st.empty()
