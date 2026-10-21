@@ -29,16 +29,28 @@ SAFE_OPERATORS = {
 }
 
 def safe_eval_math(node):
-    if isinstance(node, ast.Constant): # number
+    if isinstance(node, ast.Constant):  # number
         if isinstance(node.value, (int, float)):
+            if abs(node.value) > 1e100:
+                raise ValueError("Number exceeds safety limit (1e100)")
             return node.value
         raise ValueError("Only numeric constants allowed")
     elif isinstance(node, ast.BinOp):
         left = safe_eval_math(node.left)
         right = safe_eval_math(node.right)
         op_type = type(node.op)
+        if op_type is ast.Pow:
+            # Prevent exponential blowup and integer string conversion freeze
+            if abs(right) > 1000 or (isinstance(left, (int, float)) and abs(left) > 1e15 and right > 2):
+                raise ValueError("Exponent or base too large for safe evaluation (max exponent: 1000)")
+        elif op_type in (ast.Div, ast.FloorDiv, ast.Mod):
+            if right == 0:
+                raise ZeroDivisionError("Division by zero")
         if op_type in SAFE_OPERATORS:
-            return SAFE_OPERATORS[op_type](left, right)
+            res = SAFE_OPERATORS[op_type](left, right)
+            if isinstance(res, (int, float)) and abs(res) > 1e100:
+                raise ValueError("Intermediate result exceeds calculation bounds")
+            return res
         raise ValueError(f"Unsupported operator: {op_type}")
     elif isinstance(node, ast.UnaryOp):
         operand = safe_eval_math(node.operand)

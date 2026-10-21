@@ -22,7 +22,8 @@ from app.schemas.coding import (
 class CodingAgentService:
     def list_workspace_files(self, custom_root: Optional[str] = None) -> WorkspaceTree:
         """Inspects authorized workspace directory and returns tree structure."""
-        root = resolve_and_validate_path(custom_root or settings.workspace_root)
+        effective_root = custom_root or settings.workspace_root
+        root = resolve_and_validate_path(effective_root, workspace_root=effective_root)
         files_list: List[WorkspaceFile] = []
 
         for p in root.rglob("*"):
@@ -32,14 +33,21 @@ class CodingAgentService:
                 continue
 
             rel_path = str(p.relative_to(root)).replace("\\", "/")
-            stat = p.stat()
-            mtime = datetime.datetime.fromtimestamp(stat.st_mtime).isoformat()
+            try:
+                stat = p.stat()
+                mtime = datetime.datetime.fromtimestamp(stat.st_mtime).isoformat()
+                is_dir = p.is_dir()
+                is_file = p.is_file()
+                size_bytes = stat.st_size if is_file else 0
+            except OSError:
+                # File deleted mid-iteration, inaccessible, or broken symlink
+                continue
             
             files_list.append(WorkspaceFile(
                 name=p.name,
                 path=rel_path,
-                is_dir=p.is_dir(),
-                size_bytes=stat.st_size if p.is_file() else 0,
+                is_dir=is_dir,
+                size_bytes=size_bytes,
                 modified_at=mtime
             ))
 
@@ -50,7 +58,8 @@ class CodingAgentService:
 
     def read_file(self, rel_path: str, custom_root: Optional[str] = None) -> Dict[str, Any]:
         """Reads file within workspace boundary safely."""
-        root = custom_root or settings.workspace_root
+        effective_root = custom_root or settings.workspace_root
+        root = resolve_and_validate_path(effective_root, workspace_root=effective_root)
         target = resolve_and_validate_path(rel_path, workspace_root=root)
         validate_file_size(target)
         
@@ -58,14 +67,14 @@ class CodingAgentService:
         try:
             content = target.read_text(encoding="utf-8")
             return {
-                "path": str(target.relative_to(resolve_and_validate_path(root))).replace("\\", "/"),
+                "path": str(target.relative_to(root)).replace("\\", "/"),
                 "content": content,
                 "size_bytes": len(content.encode("utf-8")),
                 "is_binary": False
             }
         except UnicodeDecodeError:
             return {
-                "path": str(target.relative_to(resolve_and_validate_path(root))).replace("\\", "/"),
+                "path": str(target.relative_to(root)).replace("\\", "/"),
                 "content": "[Binary file content]",
                 "size_bytes": target.stat().st_size,
                 "is_binary": True
@@ -73,7 +82,8 @@ class CodingAgentService:
 
     def compute_diff(self, file_path: str, new_content: str, custom_root: Optional[str] = None) -> ProposedFileChange:
         """Calculates a standard unified diff between current file content and proposed changes."""
-        root = resolve_and_validate_path(custom_root or settings.workspace_root)
+        effective_root = custom_root or settings.workspace_root
+        root = resolve_and_validate_path(effective_root, workspace_root=effective_root)
         target = resolve_and_validate_path(file_path, workspace_root=root, allow_creation=True)
         rel_str = str(target.relative_to(root)).replace("\\", "/")
 
@@ -108,7 +118,8 @@ class CodingAgentService:
     async def create_task(self, task_description: str, workspace_path: Optional[str] = None) -> CodingTaskResponse:
         """Creates a tracked coding task."""
         task_id = str(uuid.uuid4())
-        root = str(resolve_and_validate_path(workspace_path or settings.workspace_root))
+        effective_root = workspace_path or settings.workspace_root
+        root = str(resolve_and_validate_path(effective_root, workspace_root=effective_root))
         now = datetime.datetime.now().isoformat()
 
         await db.execute(
@@ -159,7 +170,8 @@ class CodingAgentService:
             await db.execute("UPDATE coding_tasks SET status = 'rejected' WHERE id = ?", (task_id,))
             return {"status": "rejected", "message": "Code changes were rejected by user."}
 
-        root = resolve_and_validate_path(task["workspace_path"])
+        task_ws = task["workspace_path"]
+        root = resolve_and_validate_path(task_ws, workspace_root=task_ws)
         applied_files = []
 
         for change in file_changes:
@@ -217,7 +229,8 @@ class CodingAgentService:
 
     async def get_git_status(self, custom_root: Optional[str] = None) -> GitStatusResult:
         """Inspects git status in the workspace if initialized."""
-        root = resolve_and_validate_path(custom_root or settings.workspace_root)
+        effective_root = custom_root or settings.workspace_root
+        root = resolve_and_validate_path(effective_root, workspace_root=effective_root)
         if not (root / ".git").exists():
             return GitStatusResult(is_git_repo=False, clean=True)
 

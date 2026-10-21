@@ -34,6 +34,8 @@ def extract_file_data(filename: str, file_bytes: bytes) -> Dict[str, Any]:
 
     # 2. PDF Documents
     elif ext == ".pdf":
+        text = ""
+        # Try pymupdf first, fallback to pypdf
         try:
             import pymupdf
             doc = pymupdf.open(stream=file_bytes, filetype="pdf")
@@ -43,14 +45,30 @@ def extract_file_data(filename: str, file_bytes: bytes) -> Dict[str, Any]:
                 if t:
                     pages.append(f"[Page {i+1}]\n{t}")
             text = "\n\n".join(pages).strip()
+        except ImportError:
+            try:
+                import pypdf
+                reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+                pages = []
+                for i, p in enumerate(reader.pages):
+                    t = p.extract_text() or ""
+                    t = t.strip()
+                    if t:
+                        pages.append(f"[Page {i+1}]\n{t}")
+                text = "\n\n".join(pages).strip()
+            except ImportError:
+                text = f"[PDF extraction requires 'pymupdf' or 'pypdf'. File: {filename} ({size_kb} KB)]"
+            except Exception as e:
+                text = f"[Error reading PDF {filename} with pypdf: {e}]"
         except Exception as e:
             text = f"[Error reading PDF {filename}: {e}]"
+
         return {
             "name": filename,
             "type": "document",
             "ext": ext,
             "size_kb": size_kb,
-            "text": text
+            "text": text or f"[PDF {filename} contains no extractable text]"
         }
 
     # 3. Microsoft Word Documents (.docx / .doc)
@@ -65,6 +83,8 @@ def extract_file_data(filename: str, file_bytes: bytes) -> Dict[str, Any]:
                     if row_t:
                         parts.append(row_t)
             text = "\n".join(parts).strip()
+        except ImportError:
+            text = f"[Word document extraction requires 'python-docx'. File: {filename} ({size_kb} KB)]"
         except Exception as e:
             text = f"[Error reading Word document {filename}: {e}]"
         return {
@@ -72,15 +92,62 @@ def extract_file_data(filename: str, file_bytes: bytes) -> Dict[str, Any]:
             "type": "document",
             "ext": ext,
             "size_kb": size_kb,
-            "text": text
+            "text": text or f"[Word document {filename} is empty]"
         }
 
-    # 4. Text, Code, CSV, JSON, Markdown, Configs
+    # 4. Excel / Spreadsheet Documents (.xlsx, .xls)
+    elif ext in [".xlsx", ".xls"]:
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+            sheet_texts = []
+            for sheet_name in wb.sheetnames[:5]:  # limit to first 5 sheets
+                ws = wb[sheet_name]
+                rows = []
+                for row in ws.iter_rows(values_only=True):
+                    row_vals = [str(v).strip() for v in row if v is not None and str(v).strip()]
+                    if row_vals:
+                        rows.append(" | ".join(row_vals))
+                    if len(rows) >= 200:
+                        rows.append("... [truncated remaining rows] ...")
+                        break
+                if rows:
+                    sheet_texts.append(f"### Sheet: {sheet_name}\n" + "\n".join(rows))
+            text = "\n\n".join(sheet_texts).strip()
+        except ImportError:
+            text = f"[Excel spreadsheet extraction requires 'openpyxl'. File: {filename} ({size_kb} KB)]"
+        except Exception as e:
+            text = f"[Error reading Spreadsheet {filename}: {e}]"
+        return {
+            "name": filename,
+            "type": "document",
+            "ext": ext,
+            "size_kb": size_kb,
+            "text": text or f"[Spreadsheet {filename} contains no rows]"
+        }
+
+    # 5. Non-text Binary Files Protection (prevent dumping corrupt/null bytes to LLM)
+    elif (
+        ext in [".bin", ".exe", ".dll", ".so", ".dylib", ".zip", ".tar", ".gz", ".7z", ".rar", ".parquet", ".pkl", ".pickle", ".pyc", ".iso", ".dat"]
+        or (b"\x00" in file_bytes[:8192])
+    ):
+        return {
+            "name": filename,
+            "type": "binary",
+            "ext": ext,
+            "size_kb": size_kb,
+            "text": f"[Binary file: {filename} ({size_kb} KB) - binary contents omitted from prompt context]"
+        }
+
+    # 6. Text, Code, CSV, JSON, Markdown, Configs
     else:
         try:
             text = file_bytes.decode("utf-8")
-        except Exception:
-            text = file_bytes.decode("latin-1", errors="replace")
+        except UnicodeDecodeError:
+            try:
+                text = file_bytes.decode("latin-1")
+            except Exception as e:
+                text = f"[Unable to decode text file {filename}: {e}]"
         return {
             "name": filename,
             "type": "text",

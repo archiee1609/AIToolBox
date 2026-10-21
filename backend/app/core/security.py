@@ -1,10 +1,12 @@
 import os
+import urllib.parse
 from pathlib import Path
 from typing import Union, Optional, Tuple
 from app.core.config import settings
 from app.core.logging import logger
 
 BLOCKED_COMMAND_SUBSTRINGS = [
+    # Windows destructive system commands
     "format ",
     "diskpart",
     "reg delete",
@@ -18,6 +20,24 @@ BLOCKED_COMMAND_SUBSTRINGS = [
     "del /f /s /q %windir%",
     "rmdir /s /q c:\\",
     "rmdir /s /q %windir%",
+    
+    # Linux & macOS destructive filesystem commands
+    "rm -rf /",
+    "rm -fr /",
+    "rm -rf /*",
+    "rm -fr /*",
+    "rm -rf ~",
+    "rm -fr ~",
+    "chmod -r 777 /",
+    "chmod 777 /",
+    "chown -r ",
+    "reboot",
+    "poweroff",
+    "init 0",
+    "init 6",
+    "halt",
+    
+    # Raw disk & fork bomb operations
     "wipefs",
     "mkfs",
     ":(){ :|:& };:", # fork bomb
@@ -45,9 +65,13 @@ def resolve_and_validate_path(
     root = Path(workspace_root or settings.workspace_root).resolve()
     
     if isinstance(target_path, str):
-        if "\0" in target_path:
+        # Decode URL / percent-encoded sequences (e.g. %2e%2e%2f or double-encoded %252e)
+        unquoted = urllib.parse.unquote(target_path)
+        if "%" in unquoted:
+            unquoted = urllib.parse.unquote(unquoted)
+        if "\0" in unquoted:
             raise PathTraversalError("Null byte detected in path.")
-        p = Path(target_path)
+        p = Path(unquoted)
     else:
         p = target_path
 
@@ -109,8 +133,17 @@ def evaluate_command_safety(
         if blocked in cmd_lower:
             return False, f"Command contains blocked high-risk pattern: '{blocked}'"
 
-    # Block administrative privilege escalation attempts
-    if "runas" in cmd_lower or "start-process -verb runas" in cmd_lower:
-        return False, "Privilege escalation (RunAs/Administrator) is strictly forbidden."
+    # Block administrative privilege escalation attempts (Windows RunAs & POSIX sudo/su/doas)
+    escalation_patterns = [
+        "runas",
+        "start-process -verb runas",
+        "sudo ",
+        "su -",
+        "su ",
+        "doas ",
+        "pkexec "
+    ]
+    if any(pat in cmd_lower for pat in escalation_patterns) or cmd_lower in ["sudo", "su", "doas", "pkexec"]:
+        return False, "Privilege escalation (Administrator / sudo / su / root) is strictly forbidden."
 
     return True, "Command passed security checks."

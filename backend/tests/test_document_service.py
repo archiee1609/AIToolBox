@@ -1,11 +1,10 @@
 import io
 import pytest
-import pymupdf
-import docx
 from app.services.document_service import extract_file_data, process_uploaded_files
 
 
 def test_extract_pdf():
+    pymupdf = pytest.importorskip("pymupdf")
     doc = pymupdf.open()
     p = doc.new_page()
     p.insert_text((50, 72), "John Doe Resume\nSkills: Python, Ollama, PyTorch")
@@ -19,6 +18,7 @@ def test_extract_pdf():
 
 
 def test_extract_docx():
+    docx = pytest.importorskip("docx")
     d = docx.Document()
     d.add_paragraph("Job Description: Senior AI Engineer")
     tbl = d.add_table(rows=1, cols=2)

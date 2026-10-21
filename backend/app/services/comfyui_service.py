@@ -8,12 +8,14 @@ import shutil
 import asyncio
 import datetime
 import subprocess
+import signal
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import httpx
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.resource_balancer import get_balanced_comfyui_args, get_balanced_image_dimensions
 from app.database.connection import db
 from app.schemas.image import ComfyUIStatusResponse, ImageGenerateRequest, ImageGenerateResponse
 
@@ -277,6 +279,23 @@ class ComfyUIService:
                 files.append(f.name)
         return sorted(files)
 
+    def find_python_executable(self) -> str:
+        """
+        Locates the appropriate Python interpreter for running ComfyUI across Windows, macOS, and Linux.
+        Checks dedicated ComfyUI venvs, project virtualenv, and falls back to sys.executable.
+        """
+        is_win = sys.platform == "win32"
+        venv_candidates = [
+            self.comfy_dir / "venv" / ("Scripts/python.exe" if is_win else "bin/python"),
+            settings.base_dir / ".venv" / ("Scripts/python.exe" if is_win else "bin/python"),
+            self.comfy_dir / ".venv" / ("Scripts/python.exe" if is_win else "bin/python"),
+        ]
+        for candidate in venv_candidates:
+            if candidate.is_file():
+                return str(candidate)
+
+        return sys.executable
+
     async def is_server_reachable(self) -> bool:
         """Checks if ComfyUI HTTP server responds on the configured port."""
         try:
@@ -287,7 +306,7 @@ class ComfyUIService:
             return False
 
     async def start_service(self) -> bool:
-        """Launches the ComfyUI subprocess if it's not already running."""
+        """Launches the ComfyUI subprocess across Windows, macOS, and Linux if it's not already running."""
         if await self.is_server_reachable():
             logger.info("ComfyUI is already running.")
             return True
@@ -301,17 +320,9 @@ class ComfyUIService:
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
 
-            # Detect CUDA support; if absent or uncompiled, fall back to CPU mode
-            has_cuda = False
-            try:
-                import torch
-                has_cuda = bool(torch.cuda.is_available())
-            except Exception:
-                has_cuda = False
-
-            cmd = [sys.executable, str(self.comfy_main), "--listen", "127.0.0.1", "--port", "8188"]
-            if not has_cuda:
-                cmd.extend(["--cpu", "--use-split-cross-attention"])
+            python_exe = self.find_python_executable()
+            balanced_flags = get_balanced_comfyui_args()
+            cmd = [python_exe, str(self.comfy_main)] + balanced_flags
 
             log_dir = settings.base_dir / "data" / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -320,13 +331,23 @@ class ComfyUIService:
             log_file.write(f"\n--- ComfyUI session started at {datetime.datetime.now().isoformat()} with cmd: {' '.join(cmd)} ---\n")
             log_file.flush()
 
+            popen_kwargs: Dict[str, Any] = {
+                "cwd": str(self.comfy_dir),
+                "stdout": log_file,
+                "stderr": log_file,
+                "env": env
+            }
+
+            # Cross-platform detachment
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000
+            else:
+                popen_kwargs["start_new_session"] = True
+
             # Launch in background
             self._process = subprocess.Popen(
                 cmd,
-                cwd=str(self.comfy_dir),
-                stdout=log_file,
-                stderr=log_file,
-                env=env
+                **popen_kwargs
             )
 
             # Wait up to 15 seconds for ComfyUI to load extensions and bind port
@@ -346,13 +367,35 @@ class ComfyUIService:
             return False
 
     async def stop_service(self) -> bool:
-        """Stops the ComfyUI process."""
+        """
+        Stops the ComfyUI process across Windows, macOS, and Linux.
+        On POSIX systems, terminates the entire process group to ensure child worker processes are killed.
+        """
         if self._process and self._process.poll() is None:
-            self._process.terminate()
+            pid = self._process.pid
             try:
+                if sys.platform != "win32":
+                    try:
+                        pgid = os.getpgid(pid)
+                        os.killpg(pgid, signal.SIGTERM)
+                    except Exception:
+                        self._process.terminate()
+                else:
+                    self._process.terminate()
+
                 self._process.wait(timeout=5)
             except Exception:
-                self._process.kill()
+                try:
+                    if sys.platform != "win32":
+                        try:
+                            pgid = os.getpgid(pid)
+                            os.killpg(pgid, signal.SIGKILL)
+                        except Exception:
+                            self._process.kill()
+                    else:
+                        self._process.kill()
+                except Exception:
+                    pass
             self._process = None
             return True
         return False
@@ -638,10 +681,11 @@ class ComfyUIService:
                 created_at=now
             )
 
-        # Auto-parse resolution from prompt if provided in text
+        # Auto-parse resolution from prompt if provided in text and apply load balancer memory bounds
         parsed_w, parsed_h = parse_resolution_from_prompt(req.prompt, default_width=req.width, default_height=req.height)
-        req.width = parsed_w
-        req.height = parsed_h
+        safe_w, safe_h, _ = get_balanced_image_dimensions(parsed_w, parsed_h)
+        req.width = safe_w
+        req.height = safe_h
 
         # 3. Build workflow graph
         workflow = self.build_workflow(req, chosen_ckpt)

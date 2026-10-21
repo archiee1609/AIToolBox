@@ -5,14 +5,40 @@ import shutil
 import asyncio
 import datetime
 import subprocess
+import signal
 from pathlib import Path
 from typing import List, Dict, Any, Optional, AsyncGenerator
 import httpx
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.resource_balancer import get_balanced_ollama_options
 from app.schemas.models import ModelDetails, ModelCapabilities, ModelOptions
 
 PREFERRED_MODEL_HINTS = ["gpt-oss", "gemma4:12b"]
+
+class OllamaGenerateResponse(str):
+    """
+    Rich response from Ollama generate endpoint.
+    Inherits from str so it acts natively as a string in print/format/markdown contexts,
+    while also exposing `.response`, `.raw`, `.get()`, and dict-style indexing.
+    """
+    response: str
+    raw: Dict[str, Any]
+
+    def __new__(cls, content: str, raw: Optional[Dict[str, Any]] = None):
+        instance = super().__new__(cls, content or "")
+        instance.response = content or ""
+        instance.raw = raw or {}
+        return instance
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.raw.get(key, default)
+
+    def __getitem__(self, item: Any) -> Any:
+        if isinstance(item, str):
+            return self.raw[item]
+        return super().__getitem__(item)
+
 
 class OllamaService:
     def __init__(self, base_url: Optional[str] = None):
@@ -20,41 +46,64 @@ class OllamaService:
         self._process: Optional[subprocess.Popen] = None
 
     def find_ollama_executable(self) -> Optional[Path]:
-        """Locates the Ollama executable on the system."""
+        """
+        Locates the Ollama executable on the system across Windows, macOS, and Linux.
+        Checks system PATH, platform-specific package managers (Homebrew), standard bundle paths,
+        and standard installation directories.
+        """
         # 1. System PATH
         for binary_name in ["ollama", "ollama.exe"]:
             found = shutil.which(binary_name)
             if found:
                 return Path(found)
 
-        # 2. Windows standard installation locations
+        # 2. macOS Locations (Homebrew Apple Silicon / Intel, App Bundle)
+        mac_candidates = [
+            Path("/opt/homebrew/bin/ollama"),                       # Homebrew (Apple Silicon)
+            Path("/usr/local/bin/ollama"),                         # Homebrew (Intel)
+            Path("/Applications/Ollama.app/Contents/Resources/ollama"),  # System App Bundle
+            Path.home() / "Applications" / "Ollama.app" / "Contents" / "Resources" / "ollama", # User App Bundle
+        ]
+        for mac_path in mac_candidates:
+            if mac_path.is_file() and os.access(mac_path, os.X_OK):
+                return mac_path
+
+        # 3. Linux Locations (Standard install curl script, snap, local bin)
+        linux_candidates = [
+            Path("/usr/local/bin/ollama"),
+            Path("/usr/bin/ollama"),
+            Path("/bin/ollama"),
+            Path.home() / ".local" / "bin" / "ollama",
+            Path("/var/lib/ollama/bin/ollama"),
+            Path("/snap/bin/ollama"),
+        ]
+        for linux_path in linux_candidates:
+            if linux_path.is_file() and os.access(linux_path, os.X_OK):
+                return linux_path
+
+        # 4. Windows Standard Locations
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
             candidate = Path(local_app_data) / "Programs" / "Ollama" / "ollama.exe"
-            if candidate.exists():
+            if candidate.is_file():
                 return candidate
 
         home_dir = Path.home()
         candidate = home_dir / "AppData" / "Local" / "Programs" / "Ollama" / "ollama.exe"
-        if candidate.exists():
+        if candidate.is_file():
             return candidate
 
         prog_files = os.environ.get("ProgramFiles")
         if prog_files:
             candidate = Path(prog_files) / "Ollama" / "ollama.exe"
-            if candidate.exists():
+            if candidate.is_file():
                 return candidate
 
         prog_files_x86 = os.environ.get("ProgramFiles(x86)")
         if prog_files_x86:
             candidate = Path(prog_files_x86) / "Ollama" / "ollama.exe"
-            if candidate.exists():
+            if candidate.is_file():
                 return candidate
-
-        # 3. Unix standard locations
-        for unix_path in [Path("/usr/local/bin/ollama"), Path("/usr/bin/ollama"), Path("/bin/ollama")]:
-            if unix_path.exists():
-                return unix_path
 
         return None
 
@@ -76,7 +125,7 @@ class OllamaService:
             return {"reachable": False, "version": None, "error": str(e)}
 
     async def start_service(self, timeout_seconds: int = 30) -> bool:
-        """Launches the Ollama server in background if not already running."""
+        """Launches the Ollama server in background across Windows, macOS, and Linux if not already running."""
         if await self.is_server_reachable(timeout=2.0):
             logger.info("Ollama server is already running.")
             return True
@@ -95,22 +144,28 @@ class OllamaService:
             log_file.write(f"\n--- Ollama session started at {datetime.datetime.now().isoformat()} with {ollama_bin} serve ---\n")
             log_file.flush()
 
-            creationflags = 0
+            popen_kwargs: Dict[str, Any] = {
+                "stdout": log_file,
+                "stderr": log_file,
+            }
+
+            # Cross-platform background process detachment
             if sys.platform == "win32":
-                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000  # CREATE_NO_WINDOW
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000  # CREATE_NO_WINDOW
+            else:
+                # POSIX (macOS & Linux): start in a new process group for clean daemonization
+                popen_kwargs["start_new_session"] = True
 
             env = os.environ.copy()
             # Disable Flash Attention by default to prevent CUDA stack buffer overrun
             # (exit code 0xc0000409 / shared object initialization failed) when models
             # split between GPU VRAM and CPU system memory.
             env["OLLAMA_FLASH_ATTENTION"] = "false"
+            popen_kwargs["env"] = env
 
             self._process = subprocess.Popen(
                 [str(ollama_bin), "serve"],
-                stdout=log_file,
-                stderr=log_file,
-                creationflags=creationflags,
-                env=env
+                **popen_kwargs
             )
 
             # Wait for Ollama to complete GPU discovery and bind to port
@@ -129,13 +184,36 @@ class OllamaService:
             return False
 
     async def stop_service(self) -> bool:
-        """Stops the Ollama process if launched by this service."""
+        """
+        Stops the Ollama process if launched by this service.
+        On POSIX systems, terminates the entire process group to ensure child runners are stopped.
+        """
         if self._process and self._process.poll() is None:
-            self._process.terminate()
+            pid = self._process.pid
             try:
+                if sys.platform != "win32":
+                    try:
+                        # Kill the whole process group on POSIX
+                        pgid = os.getpgid(pid)
+                        os.killpg(pgid, signal.SIGTERM)
+                    except Exception:
+                        self._process.terminate()
+                else:
+                    self._process.terminate()
+
                 self._process.wait(timeout=5)
             except Exception:
-                self._process.kill()
+                try:
+                    if sys.platform != "win32":
+                        try:
+                            pgid = os.getpgid(pid)
+                            os.killpg(pgid, signal.SIGKILL)
+                        except Exception:
+                            self._process.kill()
+                    else:
+                        self._process.kill()
+                except Exception:
+                    pass
             self._process = None
             return True
         return False
@@ -294,9 +372,16 @@ class OllamaService:
         tools: Optional[List[Dict[str, Any]]] = None,
         timeout: float = 180.0
     ) -> AsyncGenerator[str, None]:
-        """Convenience generator yielding stream text chunks directly."""
-        opts = options or {"temperature": temperature, "num_ctx": context_length}
-        async for chunk in self.stream_chat(model=model, messages=messages, options=opts, tools=tools, timeout=timeout):
+        """Convenience generator yielding stream text chunks directly with dynamic load balancing."""
+        balanced_opts = get_balanced_ollama_options(
+            model_name=model,
+            requested_context=context_length,
+            requested_temperature=temperature
+        )
+        if options:
+            balanced_opts.update(options)
+
+        async for chunk in self.stream_chat(model=model, messages=messages, options=balanced_opts, tools=tools, timeout=timeout):
             msg = chunk.get("message", {})
             token = msg.get("content", "")
             if token:
@@ -313,12 +398,20 @@ class OllamaService:
         options: Optional[Dict[str, Any]] = None,
         timeout: float = 180.0
     ) -> Any:
-        """Executes a completion prompt with optional image embeddings."""
+        """Executes a completion prompt with dynamic load balancing."""
+        balanced_opts = get_balanced_ollama_options(
+            model_name=model,
+            requested_context=context_length,
+            requested_temperature=temperature
+        )
+        if options:
+            balanced_opts.update(options)
+
         payload: Dict[str, Any] = {
             "model": model,
             "prompt": prompt,
             "stream": False,
-            "options": options or {"temperature": temperature, "num_ctx": context_length}
+            "options": balanced_opts
         }
         if system:
             payload["system"] = system
@@ -330,15 +423,8 @@ class OllamaService:
             if res.status_code != 200:
                 raise RuntimeError(f"Ollama generate error HTTP {res.status_code}: {res.text}")
             data = res.json()
-            class GenerateResult:
-                def __init__(self, raw: Dict[str, Any]):
-                    self.raw = raw
-                    self.response = raw.get("response", "")
-                def __getitem__(self, item):
-                    return self.raw[item]
-                def get(self, item, default=None):
-                    return self.raw.get(item, default)
-            return GenerateResult(data)
+            resp_str = data.get("response", "")
+            return OllamaGenerateResponse(resp_str, raw=data)
 
     async def pull_model(
         self,

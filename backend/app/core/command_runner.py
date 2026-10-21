@@ -66,14 +66,18 @@ async def run_command_safely(
     logger.info(f"Executing command safely: '{cmd_str}' in cwd '{work_dir}'")
 
     try:
-        # Use asyncio create_subprocess_shell with proper shell execution for Windows commands
+        # Build kwargs with platform-specific options (e.g. CREATE_NO_WINDOW on Windows only)
+        proc_kwargs: Dict[str, Any] = {
+            "cwd": str(work_dir),
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+        }
+        if sys.platform == "win32":
+            proc_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         proc = await asyncio.create_subprocess_shell(
             cmd_str,
-            cwd=str(work_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            # Windows specific flags to prevent popups
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            **proc_kwargs
         )
 
         stdout_bytes, stderr_bytes = await asyncio.wait_for(

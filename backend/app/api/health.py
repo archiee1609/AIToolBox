@@ -69,3 +69,23 @@ async def get_diagnostics():
         selected_model=settings.default_model,
         recent_errors=[]
     )
+
+
+@router.get("/system")
+async def get_system_environment():
+    """Returns host operating system, hardware architecture, RAM, and accelerator details."""
+    from app.core.system_info import get_system_summary
+    return get_system_summary()
+
+
+@router.get("/balancer")
+async def get_resource_balancer_status():
+    """Returns real-time system telemetry and automatic load balancing profile."""
+    from app.core.resource_balancer import get_current_load_profile, check_system_headroom
+    profile = get_current_load_profile()
+    is_healthy, advisory = check_system_headroom()
+    return {
+        "status": "healthy" if is_healthy else "constrained",
+        "advisory": advisory,
+        "profile": profile
+    }

@@ -64,6 +64,8 @@ if not is_in_streamlit_runtime:
         sys.exit(0)
 
 from app.core.config import settings
+from app.core.system_info import get_system_summary
+from app.core.resource_balancer import get_current_load_profile, get_live_telemetry, check_system_headroom
 from app.database.connection import db
 from app.database.migrations import run_migrations
 from app.services.ollama_service import ollama_service
@@ -72,6 +74,14 @@ from app.services.tool_registry import tool_registry
 from app.services.coding_agent_service import coding_agent_service
 from app.services.document_service import process_uploaded_files, extract_file_data
 from app.schemas.image import ImageGenerateRequest
+
+@st.cache_data(ttl=30)
+def get_cached_system_info():
+    return get_system_summary()
+
+@st.cache_data(ttl=2)
+def get_cached_load_profile():
+    return get_current_load_profile()
 
 # Helper to execute async functions in Streamlit safely
 def run_async(coro):
@@ -787,6 +797,33 @@ with st.sidebar:
                 run_async(comfyui_service.start_service())
                 st.rerun()
 
+    # Live Auto Load Balancer Telemetry Card
+    try:
+        lb_profile = get_cached_load_profile()
+        lb_tier_badge = lb_profile.get("badge", "⚡ Balanced")
+        lb_tier_color = lb_profile.get("color", "#0284c7")
+        lb_tele = lb_profile.get("telemetry", {})
+        lb_cpu = lb_tele.get("cpu", {})
+        lb_mem = lb_tele.get("memory", {})
+        lb_threads = lb_profile.get("optimal_threads", 4)
+        lb_safe_ctx = lb_profile.get("max_safe_context", 4096)
+        lb_ram_used = round(lb_mem.get("total_gb", 0) - lb_mem.get("available_gb", 0), 1)
+
+        st.markdown(f"""
+        <div style="margin-top: 0.65rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.5rem 0.65rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.74rem; font-weight: 700; color: #0f172a; margin-bottom: 3px;">
+                <span>⚡ Auto Balancer</span>
+                <span style="color: {lb_tier_color}; font-weight: 700;">{lb_tier_badge}</span>
+            </div>
+            <div style="font-size: 0.71rem; color: #64748b; line-height: 1.35;">
+                CPU: <b>{lb_cpu.get('percent_used', 0.0)}%</b> • RAM: <b>{lb_ram_used}/{lb_mem.get('total_gb', 0)} GB</b><br>
+                Allocation: <b>{lb_threads} Cores</b> • Safe Ctx: <b>{lb_safe_ctx} tok</b>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    except Exception:
+        pass
+
     st.caption(f"🧠 {len(active_memories)} active memories injected into prompts")
 
 # =========================================================
@@ -910,7 +947,75 @@ def render_memory_hub_section():
 
 def render_diagnostics_section():
     st.markdown("#### ⚙️ Diagnostics & Engine Health")
-    st.caption("Monitor your offline hardware acceleration, Ollama server, ComfyUI engine, and SQLite storage.")
+    st.caption("Monitor host platform architecture, hardware acceleration, Ollama server, ComfyUI diffusion, and storage.")
+
+    # 1. Host Platform & Compute Hardware Card
+    sys_sum = get_cached_system_info()
+    os_name = sys_sum.get("os_friendly", "Unknown OS")
+    arch = sys_sum.get("architecture", "")
+    cpu = sys_sum.get("cpu", {})
+    mem = sys_sum.get("memory", {})
+    accel = sys_sum.get("accelerator", {})
+
+    col_h1, col_h2, col_h3 = st.columns(3)
+    with col_h1:
+        st.markdown(f"**Host OS:**\n{os_name} (`{arch}`)")
+    with col_h2:
+        st.markdown(f"**CPU Cores & Threads:**\n{cpu.get('logical_cores', 1)} Threads ({cpu.get('physical_cores', 1)} Cores)")
+    with col_h3:
+        st.markdown(f"**System RAM:**\n{mem.get('total_gb', 0)} GB Total ({mem.get('available_gb', 0)} GB Free)")
+
+    adapters = sys_sum.get("detected_adapters", [])
+    adapters_html = ""
+    if adapters:
+        adapter_badges = " ".join([f"<code style='background: #e2e8f0; color: #1e293b; padding: 2px 6px; border-radius: 4px; font-size: 0.78rem; margin-right: 4px;'>{a}</code>" for a in adapters])
+        adapters_html = f"<div style='margin-top: 6px; font-size: 0.82rem; color: #475569;'><b>Display Adapters:</b> {adapter_badges}</div>"
+
+    st.markdown(f"""
+    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.25rem;">
+        <div>
+            <span style="font-weight: 600; color: #1e293b;">⚡ Primary Accelerator:</span> 
+            <span style="color: #0284c7; font-weight: 600;">{accel.get('name', 'CPU')}</span> — 
+            <span style="color: #475569; font-size: 0.88rem;">{accel.get('details', '')}</span>
+        </div>
+        {adapters_html}
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 2. Real-Time Resource Telemetry & Auto-Balancing Governor
+    lb_prof = get_cached_load_profile()
+    lb_tele = lb_prof.get("telemetry", {})
+    lb_cpu_pct = lb_tele.get("cpu", {}).get("percent_used", 0.0)
+    lb_mem_pct = lb_tele.get("memory", {}).get("percent_used", 0.0)
+    lb_vram_pct = lb_tele.get("accelerator", {}).get("vram_percent_used", 0.0)
+
+    st.markdown("##### ⚡ Auto Load Balancer & Real-Time Resource Governor")
+    col_g1, col_g2, col_g3 = st.columns(3)
+    with col_g1:
+        st.metric("CPU Utilization", f"{lb_cpu_pct:.1f}%")
+        st.progress(min(max(lb_cpu_pct / 100.0, 0.0), 1.0))
+    with col_g2:
+        st.metric("System RAM Used", f"{lb_mem_pct:.1f}%", f"{lb_tele.get('memory', {}).get('available_gb', 0)} GB Free")
+        st.progress(min(max(lb_mem_pct / 100.0, 0.0), 1.0))
+    with col_g3:
+        vram_lbl = f"{lb_tele.get('accelerator', {}).get('free_vram_gb', 0)} GB Free" if lb_tele.get('accelerator', {}).get('total_vram_gb', 0) > 0 else "Unified / CPU"
+        st.metric("VRAM / Memory Load", f"{lb_vram_pct:.1f}%", vram_lbl)
+        st.progress(min(max(lb_vram_pct / 100.0, 0.0), 1.0))
+
+    st.markdown(f"""
+    <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.85rem 1.1rem; margin-top: 0.5rem; margin-bottom: 1.25rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+            <span style="font-weight: 700; color: #0f172a; font-size: 0.9rem;">
+                Active Balance Profile: <span style="color: {lb_prof['color']};">{lb_prof['title']}</span>
+            </span>
+            <span class="brand-pill pill-success" style="font-size: 0.75rem;">Automatic Balancing Active</span>
+        </div>
+        <div style="font-size: 0.82rem; color: #475569; line-height: 1.45;">
+            {lb_prof['description']}<br>
+            <b>Auto-Allocated:</b> {lb_prof['optimal_threads']} CPU Threads • Batch Size: {lb_prof['prompt_batch_size']} • Safe Context Ceiling: {lb_prof['max_safe_context']} tokens • ComfyUI Flags: <code>{' '.join(lb_prof['comfyui_cli_flags']) or 'Native Metal'}</code>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     col_d1, col_d2 = st.columns(2)
 
@@ -1260,7 +1365,8 @@ if selected_page == "💬 All-in-One Studio":
                     temperature=temperature,
                     context_length=context_tokens
                 ))
-                report_content = f"## 📄 {report_title}\n\n---\n\n{response.response}"
+                rep_text = getattr(response, "response", None) or (response.get("response") if isinstance(response, dict) else str(response))
+                report_content = f"## 📄 {report_title}\n\n---\n\n{rep_text}"
                 status_box.empty()
                 st.markdown(report_content)
                 save_chat_message(st.session_state["active_conv_id"], "assistant", report_content)
@@ -1469,20 +1575,53 @@ elif selected_page == "⚙️ Settings":
 
         with col_inf_right:
             st.markdown("##### 🛡️ Hardware & Acceleration")
+            sys_info = get_cached_system_info()
+            accel = sys_info.get("accelerator", {})
+            cpu = sys_info.get("cpu", {})
+            mem = sys_info.get("memory", {})
+            os_name = sys_info.get("os_friendly", "Unknown OS")
+            arch = sys_info.get("architecture", "")
+
+            accel_name = accel.get("name", "Local Compute Engine")
+            accel_details = accel.get("details", "Hardware acceleration active.")
+
+            adapters = sys_info.get("detected_adapters", [])
+            other_adapters = [a for a in adapters if a.lower() not in accel_name.lower() and a.lower() not in accel_details.lower()]
+            other_adapters_html = ""
+            if other_adapters:
+                other_adapters_html = f"""
+                <div style="font-size: 0.82rem; color: #475569; margin-bottom: 0.45rem;">
+                    <b>Other Adapters:</b> {', '.join(other_adapters)}
+                </div>
+                """
+
             st.markdown(f"""
             <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1.1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
-                <div style="font-weight: 700; font-size: 0.95rem; color: #0f172a; margin-bottom: 0.75rem;">RTX 4090 GPU Compute</div>
-                <div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.5rem;">
-                    <b>Compute Device:</b> NVIDIA GeForce RTX 4090 (16GB VRAM)
+                <div style="font-weight: 700; font-size: 0.95rem; color: #0f172a; margin-bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between;">
+                    <span>⚡ {accel_name}</span>
+                    <span class="brand-pill pill-primary" style="font-size: 0.72rem; padding: 2px 8px;">{arch}</span>
                 </div>
-                <div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.5rem;">
+                <div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.45rem;">
+                    <b>Platform:</b> {os_name}
+                </div>
+                <div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.45rem;">
+                    <b>Compute Device:</b> {accel_details}
+                </div>
+                {other_adapters_html}
+                <div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.45rem;">
+                    <b>Host RAM:</b> {mem.get('total_gb', 0)} GB Total ({mem.get('available_gb', 0)} GB Available)
+                </div>
+                <div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.45rem;">
                     <b>Engine Host:</b> <code>http://127.0.0.1:11434</code>
                 </div>
-                <div style="font-size: 0.82rem; color: #059669; margin-bottom: 0.5rem;">
+                <div style="font-size: 0.82rem; color: #0284c7; margin-bottom: 0.45rem;">
+                    <b>Load Balancer:</b> <span class="brand-pill pill-primary" style="font-size: 0.72rem; padding: 2px 7px;">{get_cached_load_profile()['badge']} Active</span> <span style="color: #64748b; font-size: 0.78rem;">({get_cached_load_profile()['optimal_threads']} Cores, Batch {get_cached_load_profile()['prompt_batch_size']})</span>
+                </div>
+                <div style="font-size: 0.82rem; color: #059669; margin-bottom: 0.45rem;">
                     <b>Safe Flash Attention:</b> <span class="brand-pill pill-success">Active & Protected</span>
                 </div>
                 <div style="font-size: 0.78rem; color: #64748b; line-height: 1.45; margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid #f1f5f9;">
-                    <code>OLLAMA_FLASH_ATTENTION=false</code> prevents Windows CUDA stack buffer overrun crashes (<code>0xc0000409</code>) on large models like <code>gpt-oss:latest</code>.
+                    <code>OLLAMA_FLASH_ATTENTION=false</code> prevents hybrid VRAM/RAM split buffer overruns across Windows, macOS, and Linux.
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -1843,7 +1982,8 @@ elif selected_page == "👁️ Vision Multimodal":
                 ))
                 status_box.empty()
                 st.markdown("### 📋 Analysis Result")
-                st.markdown(res.response)
+                rep_text = getattr(res, "response", None) or (res.get("response") if isinstance(res, dict) else str(res))
+                st.markdown(rep_text)
             except Exception as e:
                 status_box.empty()
                 st.error(f"Vision analysis error: {e}")
