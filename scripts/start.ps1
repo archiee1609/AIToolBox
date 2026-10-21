@@ -8,12 +8,17 @@ Write-Host "========================================================`n" -Foregro
 $rootDir = Split-Path -Parent $PSScriptRoot
 Set-Location $rootDir
 
-# Check Ollama
+# Set CUDA safety flags for Ollama
+$env:OLLAMA_FLASH_ATTENTION = "false"
+
+# Check & start local Ollama service
 try {
     $ollama = Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/version" -TimeoutSec 2 -ErrorAction Stop
     Write-Host "[+] Ollama server is ONLINE (Version: $($ollama.version))" -ForegroundColor Green
 } catch {
-    Write-Host "[!] Warning: Ollama is not running on http://127.0.0.1:11434. Start Ollama to enable AI chat." -ForegroundColor Yellow
+    Write-Host "[*] Auto-starting local Ollama service..." -ForegroundColor Green
+    Start-Process ollama -ArgumentList "serve" -WindowStyle Hidden -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
 }
 
 # Launch ComfyUI if present

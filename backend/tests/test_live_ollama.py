@@ -3,6 +3,7 @@ from app.services.ollama_service import ollama_service
 
 @pytest.mark.asyncio
 async def test_live_ollama_model_discovery():
+    await ollama_service.ensure_running()
     health = await ollama_service.check_health()
     assert health["reachable"] is True
     assert health["version"] is not None

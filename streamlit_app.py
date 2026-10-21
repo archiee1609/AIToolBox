@@ -21,6 +21,48 @@ BACKEND_DIR = ROOT_DIR / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+# If user executes `python streamlit_app.py` directly, start Ollama & ComfyUI and launch Streamlit runner
+try:
+    import streamlit.runtime
+    is_in_streamlit_runtime = streamlit.runtime.exists()
+except Exception:
+    is_in_streamlit_runtime = False
+
+if not is_in_streamlit_runtime:
+    import subprocess
+    from app.services.ollama_service import ollama_service
+    from app.services.comfyui_service import comfyui_service
+
+    print("========================================================")
+    print("       LOCAL AI WORKBENCH - ALL-IN-ONE LAUNCHER         ")
+    print("========================================================")
+    print("[*] Checking local Ollama engine...")
+    try:
+        asyncio.run(ollama_service.ensure_running())
+        print("[+] Ollama service is online!")
+    except Exception as e:
+        print(f"[!] Ollama status notice: {e}")
+
+    if comfyui_service.comfy_main.exists():
+        print("[*] Checking local ComfyUI engine...")
+        try:
+            asyncio.run(comfyui_service.ensure_running())
+            print("[+] ComfyUI service is online!")
+        except Exception as e:
+            print(f"[!] ComfyUI status notice: {e}")
+
+    print("[*] Launching Local AI Workbench via Streamlit at http://127.0.0.1:8501...")
+    script_path = str(Path(__file__).resolve())
+    cmd = [sys.executable, "-m", "streamlit", "run", script_path, "--server.port", "8501"] + sys.argv[1:]
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    try:
+        proc = subprocess.run(cmd, env=env)
+        sys.exit(proc.returncode)
+    except KeyboardInterrupt:
+        print("\n[*] Local AI Workbench stopped.")
+        sys.exit(0)
+
 from app.core.config import settings
 from app.database.connection import db
 from app.database.migrations import run_migrations
@@ -50,18 +92,93 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Styling (Professional, Friendly Light Theme)
+# Custom Styling (Professional, Clean Enterprise Light Theme)
 st.markdown("""
 <style>
     /* Google Plus Jakarta Sans & JetBrains Mono Fonts */
-    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
-    html, body, [class*="css"] {
-        font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    * {
+        font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
     }
-    
-    code, pre, [class*="stCode"] {
+
+    code, pre, [class*="stCode"], kbd {
         font-family: 'JetBrains Mono', monospace !important;
+    }
+
+    /* Overall App Background & Padding */
+    .stApp {
+        background-color: #f8fafc;
+    }
+
+    .main .block-container {
+        padding-top: 1.25rem;
+        padding-bottom: 2.5rem;
+        max-width: 1280px;
+    }
+
+    /* Sidebar Styling */
+    [data-testid="stSidebar"] {
+        background-color: #ffffff;
+        border-right: 1px solid #e2e8f0;
+    }
+
+    [data-testid="stSidebar"] > div:first-child {
+        padding-top: 1.25rem;
+    }
+
+    [data-testid="stSidebar"] hr {
+        margin: 0.85rem 0;
+        border-color: #f1f5f9;
+    }
+
+    /* Navigation Radio Pills in Sidebar */
+    [data-testid="stSidebar"] div[data-testid="stRadio"] > div[role="radiogroup"] {
+        background: #f1f5f9;
+        padding: 0.35rem;
+        border-radius: 0.75rem;
+        gap: 0.25rem;
+    }
+
+    [data-testid="stSidebar"] div[data-testid="stRadio"] label {
+        border-radius: 0.55rem;
+        padding: 0.5rem 0.85rem !important;
+        font-weight: 600;
+        font-size: 0.88rem;
+        color: #475569;
+        transition: all 0.15s ease-in-out;
+        cursor: pointer;
+        border: 1px solid transparent;
+        background: transparent;
+    }
+
+    [data-testid="stSidebar"] div[data-testid="stRadio"] label:hover {
+        color: #0f172a;
+        background-color: #ffffff;
+    }
+
+    [data-testid="stSidebar"] div[data-testid="stRadio"] label[data-checked="true"],
+    [data-testid="stSidebar"] div[data-testid="stRadio"] input:checked + div {
+        color: #4f46e5 !important;
+        font-weight: 700;
+    }
+
+    /* Sleek Custom Scrollbars */
+    ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
     }
 
     /* Top Brand Bar */
@@ -69,12 +186,12 @@ st.markdown("""
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 0.75rem 1.25rem;
+        padding: 0.85rem 1.35rem;
         background: #ffffff;
         border: 1px solid #e2e8f0;
         border-radius: 1rem;
         margin-bottom: 1.25rem;
-        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04);
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.03);
     }
     .brand-title {
         font-size: 1.15rem;
@@ -83,16 +200,17 @@ st.markdown("""
         letter-spacing: -0.02em;
         display: flex;
         align-items: center;
-        gap: 0.5rem;
+        gap: 0.6rem;
     }
     .brand-pill {
         display: inline-flex;
         align-items: center;
         gap: 0.35rem;
-        padding: 0.2rem 0.65rem;
-        font-size: 0.72rem;
+        padding: 0.25rem 0.75rem;
+        font-size: 0.74rem;
         font-weight: 700;
         border-radius: 9999px;
+        line-height: 1.2;
     }
     .pill-success {
         background-color: #ecfdf5;
@@ -109,9 +227,14 @@ st.markdown("""
         color: #d97706;
         border: 1px solid #fde68a;
     }
+    .pill-neutral {
+        background-color: #f1f5f9;
+        color: #475569;
+        border: 1px solid #e2e8f0;
+    }
 
     /* Cards */
-    .stCard {
+    .stCard, .workbench-card {
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
         border-radius: 0.875rem;
@@ -119,7 +242,40 @@ st.markdown("""
         box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.03);
         margin-bottom: 1rem;
     }
-    
+
+    /* Buttons */
+    button[kind="primary"] {
+        background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
+        border: none !important;
+        color: #ffffff !important;
+        font-weight: 600 !important;
+        border-radius: 0.65rem !important;
+        padding: 0.5rem 1.15rem !important;
+        box-shadow: 0 2px 4px rgba(79, 70, 229, 0.2) !important;
+        transition: all 0.18s ease-in-out !important;
+    }
+    button[kind="primary"]:hover {
+        box-shadow: 0 4px 10px rgba(79, 70, 229, 0.32) !important;
+        transform: translateY(-1px);
+    }
+    button[kind="primary"]:active {
+        transform: translateY(0);
+    }
+
+    button[kind="secondary"] {
+        border-radius: 0.6rem !important;
+        border: 1px solid #e2e8f0 !important;
+        background-color: #ffffff !important;
+        color: #334155 !important;
+        font-weight: 500 !important;
+        transition: all 0.15s ease !important;
+    }
+    button[kind="secondary"]:hover {
+        border-color: #cbd5e1 !important;
+        background-color: #f8fafc !important;
+        color: #0f172a !important;
+    }
+
     /* Starter Prompt Cards */
     .starter-btn {
         text-align: left;
@@ -127,7 +283,7 @@ st.markdown("""
         border-radius: 0.875rem !important;
         border: 1px solid #e2e8f0 !important;
         background: #ffffff !important;
-        padding: 0.75rem 1rem !important;
+        padding: 0.85rem 1.1rem !important;
         transition: all 0.15s ease !important;
     }
     .starter-btn:hover {
@@ -138,11 +294,61 @@ st.markdown("""
     /* Chat Messages styling */
     [data-testid="stChatMessage"] {
         border-radius: 1rem;
-        padding: 1rem;
-        margin-bottom: 0.75rem;
+        padding: 1.1rem 1.35rem;
+        margin-bottom: 0.85rem;
         border: 1px solid #e2e8f0;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+        transition: all 0.15s ease;
+    }
+    [data-testid="stChatMessage"]:hover {
+        border-color: #cbd5e1;
+        box-shadow: 0 3px 8px rgba(0, 0, 0, 0.04);
+    }
+
+    /* Distinct styling for User vs Assistant bubbles */
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+        background-color: #f8fafc;
+        border-left: 3.5px solid #6366f1;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) {
         background-color: #ffffff;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+        border-left: 3.5px solid #10b981;
+    }
+
+    /* Chat Input Bar */
+    [data-testid="stChatInput"] {
+        border-radius: 1.25rem !important;
+        border: 1.5px solid #cbd5e1 !important;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03) !important;
+        background: #ffffff !important;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    [data-testid="stChatInput"]:focus-within {
+        border-color: #6366f1 !important;
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.16) !important;
+    }
+
+    /* Tabs Styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 1.25rem;
+        border-bottom: 1.5px solid #e2e8f0;
+        padding-bottom: 0.25rem;
+    }
+    .stTabs [data-baseweb="tab"] {
+        font-weight: 600;
+        font-size: 0.92rem;
+        color: #64748b;
+        padding: 0.6rem 0.5rem;
+        border: none !important;
+        background: transparent !important;
+        transition: color 0.15s ease;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        color: #0f172a;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #4f46e5 !important;
+        border-bottom: 2.5px solid #4f46e5 !important;
     }
 
     /* Thinking & Analysing Subtle Animation */
@@ -255,9 +461,29 @@ def initialize_system():
 
 initialize_system()
 
+# Ensure Background Engines (Ollama & ComfyUI)
+@st.cache_resource
+def ensure_background_engines():
+    """Auto-starts Ollama and ComfyUI on first application load."""
+    if not run_async(ollama_service.is_server_reachable(timeout=2.0)):
+        run_async(ollama_service.start_service())
+    if comfyui_service.comfy_main.exists() and not run_async(comfyui_service.is_server_reachable()):
+        run_async(comfyui_service.start_service())
+    return True
+
+ensure_background_engines()
+
 # Check Services
-ollama_health = run_async(ollama_service.check_health())
-ollama_online = ollama_health.get("reachable", False)
+ollama_online = run_async(ollama_service.is_server_reachable(timeout=2.0))
+if not ollama_online:
+    # Attempt on-demand start if not yet running
+    try:
+        run_async(ollama_service.start_service(timeout_seconds=15))
+        ollama_online = run_async(ollama_service.is_server_reachable(timeout=2.0))
+    except Exception:
+        pass
+
+ollama_health = run_async(ollama_service.check_health(timeout=3.0)) if ollama_online else {"reachable": False}
 models_list = run_async(ollama_service.list_models()) if ollama_online else []
 model_names = [m.name for m in models_list] if models_list else ["gemma4:12b"]
 
@@ -399,16 +625,58 @@ def load_memories() -> List[Dict[str, Any]]:
 stored_memories = load_memories()
 active_memories = [m for m in stored_memories if m["enabled"]]
 
+# Load persisted preferences and initialize session state before rendering
+saved_sys_inst = get_preference("system_instruction", DEFAULT_SYSTEM_INSTRUCTION)
+saved_model = get_preference("selected_model", "")
+try:
+    saved_temp = float(get_preference("temperature", "0.7"))
+except Exception:
+    saved_temp = 0.7
+try:
+    saved_ctx = int(get_preference("context_tokens", "8192"))
+except Exception:
+    saved_ctx = 8192
+
+if "selected_model_val" not in st.session_state:
+    if saved_model and saved_model in model_names:
+        st.session_state["selected_model_val"] = saved_model
+    else:
+        st.session_state["selected_model_val"] = model_names[0] if model_names else "gemma4:12b"
+
+if "temperature_val" not in st.session_state:
+    st.session_state["temperature_val"] = min(max(saved_temp, 0.0), 1.0)
+
+if "context_tokens_val" not in st.session_state:
+    st.session_state["context_tokens_val"] = saved_ctx
+
+if "sys_inst_val" not in st.session_state:
+    st.session_state["sys_inst_val"] = saved_sys_inst
+
+# Active inference parameters used across modules
+selected_model = st.session_state["selected_model_val"]
+temperature = float(st.session_state["temperature_val"])
+context_tokens = int(st.session_state["context_tokens_val"])
+system_instruction = st.session_state["sys_inst_val"]
+
 # ---------------------------------------------------------
 # SIDEBAR NAVIGATION & INFERENCE CONTROLS
 # ---------------------------------------------------------
 with st.sidebar:
-    st.markdown("### ⚡ AI Workbench")
-    st.caption("Offline, Private AI Workstation")
+    st.markdown("""
+    <div style="display: flex; align-items: center; gap: 0.65rem; margin-bottom: 0.75rem;">
+        <div style="background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%); color: white; width: 34px; height: 34px; border-radius: 9px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.15rem; box-shadow: 0 2px 6px rgba(79, 70, 229, 0.25);">
+            ⚡
+        </div>
+        <div>
+            <div style="font-weight: 800; font-size: 1.05rem; color: #0f172a; line-height: 1.15;">AI Workbench</div>
+            <div style="font-size: 0.73rem; color: #64748b; font-weight: 500;">Private • Offline Studio</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # + New Chat (Gemini / ChatGPT Style prominent starter)
     if st.button("➕ New Chat", use_container_width=True, type="primary"):
-        target_model = st.session_state.get("selected_model_key", model_names[0] if model_names else "gemma4:12b")
+        target_model = st.session_state.get("selected_model_val", model_names[0] if model_names else "gemma4:12b")
         new_conv_id = create_new_conversation("New Chat", target_model)
         st.session_state["active_conv_id"] = new_conv_id
         st.session_state["messages"] = []
@@ -416,17 +684,23 @@ with st.sidebar:
         st.rerun()
 
     # Module Navigation
+    # All features are unified in the All-in-One Studio & Settings. Developer tabs preserved in code.
+    ALL_MODULE_PAGES = [
+        "💬 All-in-One Studio",
+        "⚙️ Settings",
+        "🧠 AI Tool Memory Hub",
+        "🎨 ComfyUI Image Lab",
+        "💻 Autonomous Coding Agent",
+        "👁️ Vision Multimodal",
+        "🛠️ AI Tools",
+        "⚙️ Diagnostics & Models"
+    ]
+    show_all_modules = st.query_params.get("show_all") in ["1", "true"]
+    nav_options = ALL_MODULE_PAGES if show_all_modules else ["💬 All-in-One Studio", "⚙️ Settings"]
+
     selected_page = st.radio(
         "Navigation",
-        [
-            "💬 All-in-One Studio",
-            "🧠 AI Tool Memory Hub",
-            "🎨 ComfyUI Image Lab",
-            "💻 Autonomous Coding Agent",
-            "👁️ Vision Multimodal",
-            "🛠️ AI Tools",
-            "⚙️ Diagnostics & Models"
-        ],
+        nav_options,
         index=0,
         label_visibility="collapsed"
     )
@@ -450,14 +724,14 @@ with st.sidebar:
         st.session_state["loaded_conv_id"] = st.session_state["active_conv_id"]
 
     # 🕒 Chat History Sidebar (Gemini & ChatGPT style)
-    st.markdown("#### 🕒 Recent Chats")
-    with st.container(height=230):
+    st.markdown("##### 🕒 Recent Chats")
+    with st.container(height=260):
         for conv in all_conversations:
             is_active = (conv["id"] == st.session_state["active_conv_id"])
             col_c1, col_c2 = st.columns([5, 1])
             with col_c1:
                 raw_t = conv.get("title") or "New Chat"
-                display_t = raw_t if len(raw_t) <= 20 else raw_t[:18] + "..."
+                display_t = raw_t if len(raw_t) <= 19 else raw_t[:17] + "..."
                 label = f"▸ {display_t}" if is_active else f"  {display_t}"
                 if st.button(
                     label,
@@ -478,7 +752,7 @@ with st.sidebar:
                         st.session_state["messages"] = load_conversation_messages(rem[0]["id"])
                         st.session_state["loaded_conv_id"] = rem[0]["id"]
                     else:
-                        new_id = create_new_conversation("New Chat", model_names[0] if model_names else "gemma4:12b")
+                        new_id = create_new_conversation("New Chat", selected_model)
                         st.session_state["active_conv_id"] = new_id
                         st.session_state["messages"] = []
                         st.session_state["loaded_conv_id"] = new_id
@@ -486,94 +760,8 @@ with st.sidebar:
 
     st.divider()
 
-    # Load persisted preferences
-    saved_sys_inst = get_preference("system_instruction", DEFAULT_SYSTEM_INSTRUCTION)
-    saved_model = get_preference("selected_model", "")
-    try:
-        saved_temp = float(get_preference("temperature", "0.7"))
-    except Exception:
-        saved_temp = 0.7
-    try:
-        saved_ctx = int(get_preference("context_tokens", "8192"))
-    except Exception:
-        saved_ctx = 8192
-
-    if "sys_inst_input" not in st.session_state:
-        st.session_state["sys_inst_input"] = saved_sys_inst
-
-    # Model Configuration
-    st.markdown("#### 🤖 Model Inference")
-    model_idx = 0
-    if saved_model and saved_model in model_names:
-        model_idx = model_names.index(saved_model)
-
-    def on_model_change():
-        set_preference("selected_model", st.session_state.get("selected_model_key", ""))
-
-    selected_model = st.selectbox(
-        "Active Model",
-        options=model_names,
-        index=model_idx,
-        key="selected_model_key",
-        on_change=on_model_change,
-        help="Select any local model running on your Ollama server. Persists across sessions."
-    )
-
-    def on_temp_change():
-        set_preference("temperature", str(st.session_state.get("temp_slider", 0.7)))
-
-    def on_ctx_change():
-        set_preference("context_tokens", str(st.session_state.get("ctx_select", 8192)))
-
-    temperature = st.slider(
-        "Temperature",
-        min_value=0.0,
-        max_value=1.0,
-        value=min(max(saved_temp, 0.0), 1.0),
-        step=0.05,
-        key="temp_slider",
-        on_change=on_temp_change
-    )
-
-    ctx_options = [2048, 4096, 8192, 16384, 32768]
-    ctx_idx = ctx_options.index(saved_ctx) if saved_ctx in ctx_options else 2
-    context_tokens = st.selectbox(
-        "Context Length",
-        options=ctx_options,
-        index=ctx_idx,
-        key="ctx_select",
-        on_change=on_ctx_change
-    )
-
-    def on_sys_instruction_change():
-        new_val = st.session_state.get("sys_inst_input", "").strip()
-        if new_val:
-            set_preference("system_instruction", new_val)
-
-    system_instruction = st.text_area(
-        "System Instruction",
-        key="sys_inst_input",
-        height=130,
-        on_change=on_sys_instruction_change,
-        help="Custom system instruction. Automatically saved to database and remembered across sessions."
-    )
-
-    col_si_save, col_si_reset = st.columns([1, 1])
-    with col_si_save:
-        if st.button("💾 Save", use_container_width=True, help="Explicitly save system instruction"):
-            curr_val = st.session_state.get("sys_inst_input", system_instruction)
-            set_preference("system_instruction", curr_val)
-            st.toast("System instruction saved permanently!", icon="💾")
-    with col_si_reset:
-        if st.button("↺ Reset", use_container_width=True, help="Reset to default instruction"):
-            set_preference("system_instruction", DEFAULT_SYSTEM_INSTRUCTION)
-            st.session_state["sys_inst_input"] = DEFAULT_SYSTEM_INSTRUCTION
-            st.rerun()
-
-    st.divider()
-
-    # Service Status Pills
-    st.markdown("#### 📡 System Status")
+    # Service Status Pills (Compact footer)
+    st.markdown("##### 📡 System Status")
     col_stat1, col_stat2 = st.columns(2)
     with col_stat1:
         if ollama_online:
@@ -586,6 +774,12 @@ with st.sidebar:
         else:
             st.markdown('<span class="brand-pill pill-warning">🟠 ComfyUI Idle</span>', unsafe_allow_html=True)
 
+    if not ollama_online:
+        if st.button("▶ Start Ollama", use_container_width=True):
+            with st.spinner("Booting local Ollama engine..."):
+                run_async(ollama_service.start_service())
+                st.rerun()
+
     if not comfy_online and comfyui_service.comfy_main.exists():
         if st.button("▶ Start ComfyUI", use_container_width=True):
             with st.spinner("Booting ComfyUI engine with CPU optimization..."):
@@ -593,6 +787,219 @@ with st.sidebar:
                 st.rerun()
 
     st.caption(f"🧠 {len(active_memories)} active memories injected into prompts")
+
+# =========================================================
+# REUSABLE SECTION RENDERERS (MEMORIES, TOOLS, DIAGNOSTICS)
+# =========================================================
+def render_memory_hub_section():
+    st.markdown("#### 🧠 AI Tool Memory Hub")
+    st.caption("Import, synchronize, and activate guidelines from ChatGPT, Claude, Cursor, Copilot, and Gemini into your local LLM inference.")
+
+    cur_stored = load_memories()
+    cur_active = [m for m in cur_stored if m["enabled"]]
+
+    # Stats Row
+    s1, s2, s3, s4 = st.columns(4)
+    with s1:
+        st.metric("Total Memories", len(cur_stored))
+    with s2:
+        st.metric("Active in Prompts", len(cur_active), delta=f"{len(cur_active)} active")
+    with s3:
+        unique_tools = len(set((m.get("source_tool") or "custom").lower() for m in cur_stored))
+        st.metric("Connected AI Tools", unique_tools if cur_stored else 1)
+    with s4:
+        st.metric("Local Sync Status", "🟢 Synced with Ollama")
+
+    st.markdown("---")
+
+    # 1-Click Import Presets
+    st.markdown("##### ⚡ 1-Click Quick Import Presets")
+    presets = [
+        {
+            "tool": "chatgpt",
+            "name": "ChatGPT Instructions",
+            "desc": "Concise, typed code, architectural reasoning before diffs.",
+            "content": "Always provide concise, production-ready code with type annotations.\nPrefer modern standard libraries over unnecessary external packages.\nExplain the architectural reasoning before providing code diffs."
+        },
+        {
+            "tool": "claude",
+            "name": "Claude Project Memory",
+            "desc": "Clean Architecture, separation of concerns, and type safety.",
+            "content": "Adhere to Clean Architecture principles.\nSeparate domain logic, controllers, and data storage access.\nTreat documentation and type safety as first-class citizens."
+        },
+        {
+            "tool": "cursor",
+            "name": "Cursor Rules",
+            "desc": "Minimal non-destructive edits and explicit TypeScript types.",
+            "content": "Never rewrite entire files when single function changes suffice.\nUse explicit TypeScript types instead of 'any'.\nEnsure all FastAPI endpoints have request and response Pydantic models."
+        },
+        {
+            "tool": "copilot",
+            "name": "GitHub Copilot Instructions",
+            "desc": "Python 3.12+ strict typing, pytest suites, and SQLite WAL.",
+            "content": "Python 3.12+ with strict typing and pytest suites.\nReact 18 with functional components, Tailwind utility classes, and TypeScript.\nSQLite with WAL mode and transaction isolation."
+        }
+    ]
+
+    cols = st.columns(4)
+    for i, p in enumerate(presets):
+        with cols[i]:
+            st.markdown(f"**{p['name']}**")
+            st.caption(p["desc"])
+            if st.button(f"Import {p['tool'].title()}", key=f"import_preset_{p['tool']}", use_container_width=True):
+                new_id = str(uuid.uuid4())
+                now = datetime.datetime.now().isoformat()
+                run_async(db.execute(
+                    "INSERT INTO user_memories (id, key, content, source_tool, category, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+                    (new_id, f"{p['tool'].title()} Instructions", p["content"], p["tool"], "instructions", now, now)
+                ))
+                st.toast(f"Imported {p['name']} successfully!", icon="🧠")
+                st.rerun()
+
+    st.markdown("---")
+
+    # Add Custom Memory Form
+    with st.expander("➕ Add Custom Memory Rule", expanded=False):
+        with st.form("add_memory_form"):
+            col_k, col_s, col_c = st.columns([2, 1, 1])
+            with col_k:
+                new_key = st.text_input("Memory Key / Title", placeholder="e.g. FastAPI Coding Guidelines")
+            with col_s:
+                new_source = st.selectbox("Source Tool", ["chatgpt", "claude", "cursor", "copilot", "gemini", "custom"])
+            with col_c:
+                new_cat = st.selectbox("Category", ["instructions", "rules", "persona", "tech_stack", "general"])
+            
+            new_content = st.text_area("Memory Content / Rules", placeholder="Type or paste memory guidelines here...", height=100)
+            submit_mem = st.form_submit_button("Save to Memory Hub", type="primary")
+
+            if submit_mem and new_key and new_content:
+                new_id = str(uuid.uuid4())
+                now = datetime.datetime.now().isoformat()
+                run_async(db.execute(
+                    "INSERT INTO user_memories (id, key, content, source_tool, category, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+                    (new_id, new_key.strip(), new_content.strip(), new_source, new_cat, now, now)
+                ))
+                st.toast(f"Added memory: {new_key}", icon="✅")
+                st.rerun()
+
+    # Stored Memories List
+    st.markdown(f"##### 📚 Stored Memories ({len(cur_stored)})")
+    if not cur_stored:
+        st.info("No memories stored yet. Click one of the 1-click presets above to import guidelines!")
+    else:
+        for mem in cur_stored:
+            with st.container():
+                col_info, col_toggle, col_del = st.columns([5, 1, 1])
+                with col_info:
+                    status_dot = "🟢" if mem["enabled"] else "⚪"
+                    source_tag = mem.get("source_tool", "custom").upper()
+                    st.markdown(f"**{status_dot} {mem['key']}** `{source_tag}` `{mem.get('category', 'general')}`")
+                    st.code(mem["content"], language="text")
+                with col_toggle:
+                    toggle_label = "Mute" if mem["enabled"] else "Activate"
+                    if st.button(toggle_label, key=f"tog_{mem['id']}", use_container_width=True):
+                        new_state = 0 if mem["enabled"] else 1
+                        run_async(db.execute("UPDATE user_memories SET enabled = ?, updated_at = ? WHERE id = ?", (new_state, datetime.datetime.now().isoformat(), mem["id"])))
+                        st.rerun()
+                with col_del:
+                    if st.button("Delete", key=f"del_mem_{mem['id']}", use_container_width=True):
+                        run_async(db.execute("DELETE FROM user_memories WHERE id = ?", (mem["id"],)))
+                        st.rerun()
+
+
+def render_diagnostics_section():
+    st.markdown("#### ⚙️ Diagnostics & Engine Health")
+    st.caption("Monitor your offline hardware acceleration, Ollama server, ComfyUI engine, and SQLite storage.")
+
+    col_d1, col_d2 = st.columns(2)
+
+    with col_d1:
+        st.markdown("##### 🤖 Ollama Engine")
+        st.write(f"**Endpoint:** `{settings.ollama_base_url}`")
+        st.write(f"**Status:** {'🟢 Online & Healthy' if ollama_online else '🔴 Unreachable'}")
+        st.write(f"**Installed Models:** {len(models_list)}")
+        
+        if not ollama_online:
+            if st.button("🚀 Start Ollama Engine", key="diag_start_ollama", type="primary"):
+                with st.spinner("Booting local Ollama engine..."):
+                    run_async(ollama_service.start_service())
+                    st.rerun()
+
+        # Installed models details table
+        if models_list:
+            with st.expander("📦 Installed Models Breakdown", expanded=False):
+                for m in models_list:
+                    size_gb = round(getattr(m, "size", 0) / (1024**3), 2)
+                    st.markdown(f"• **`{m.name}`** ({size_gb} GB)")
+
+        # Pull model form
+        with st.form("pull_model_form"):
+            new_model_name = st.text_input("Install New Model from Ollama Registry", placeholder="e.g. qwen2.5-coder:7b")
+            pull_btn = st.form_submit_button("📥 Pull Model via Ollama")
+            if pull_btn and new_model_name:
+                st.info(f"Triggering pull for `{new_model_name}` in background...")
+
+    with col_d2:
+        st.markdown("##### 🎨 ComfyUI Diffusion Engine")
+        st.write(f"**Endpoint:** `{settings.comfyui_base_url}`")
+        st.write(f"**Status:** {'🟢 Online & Ready' if comfy_online else '🟠 Idle / Offline'}")
+        if not comfy_online and comfyui_service.comfy_main.exists():
+            if st.button("🚀 Start ComfyUI Engine", key="diag_start_comfy", type="primary"):
+                with st.spinner("Booting ComfyUI engine..."):
+                    run_async(comfyui_service.start_service())
+                    st.rerun()
+        local_checkpoints = comfyui_service.get_local_checkpoints()
+        st.write(f"**Checkpoints in Models Folder:** {len(local_checkpoints)}")
+        if local_checkpoints:
+            for ck in local_checkpoints:
+                st.code(f"models/checkpoints/{ck}")
+
+    st.markdown("---")
+    st.markdown("##### 💾 Storage & Data Persistence")
+    col_s1, col_s2, col_s3 = st.columns(3)
+    with col_s1:
+        st.markdown(f"**SQLite Database Path:**\n`{settings.db_path}`")
+    with col_s2:
+        st.markdown(f"**Workspace Root:**\n`{settings.workspace_root}`")
+    with col_s3:
+        st.markdown(f"**Generated Images:**\n`{settings.generated_images_dir}`")
+
+
+def render_tools_section():
+    st.markdown("#### 🛠️ AI Tools & Execution Sandbox")
+    st.caption("Inspect and execute sandboxed backend tools.")
+
+    available_tools = tool_registry.get_all_definitions()
+    tool_names = [t.name for t in available_tools]
+
+    sel_tool_name = st.selectbox("Select Tool", tool_names, key="settings_tool_inspect_select")
+    tool_obj = next((t for t in available_tools if t.name == sel_tool_name), None)
+
+    if tool_obj:
+        st.markdown(f"**Description:** {tool_obj.description}")
+        st.markdown(f"**Category:** `{tool_obj.category}`")
+
+        # Dynamic parameter inputs
+        params = {}
+        if tool_obj.parameters and tool_obj.parameters.get("properties"):
+            st.markdown("##### Tool Parameters")
+            for prop_name, prop_data in tool_obj.parameters["properties"].items():
+                default_val = "25 * 4 + 15" if prop_name == "expression" else "README.md" if prop_name == "path" else ""
+                params[prop_name] = st.text_input(f"{prop_name} ({prop_data.get('type', 'string')})", value=default_val, key=f"tool_input_{prop_name}")
+
+        if st.button("⚡ Test Execute Tool", type="primary", key="exec_tool_test_btn"):
+            status_box = st.empty()
+            status_box.markdown(
+                render_thinking_badge("processing", f"Executing sandboxed tool '{sel_tool_name}'..."),
+                unsafe_allow_html=True
+            )
+            res = run_async(tool_registry.execute_tool(name=sel_tool_name, arguments=params, approved=True))
+            status_box.empty()
+            if res.success:
+                st.success("Tool execution successful!")
+                st.json(res.result)
+            else:
+                st.error(f"Execution failed: {res.error}")
 
 # ---------------------------------------------------------
 # TOP BRAND BANNER
@@ -623,12 +1030,29 @@ if selected_page == "💬 All-in-One Studio":
     active_conv_meta = next((c for c in all_conversations if c["id"] == st.session_state["active_conv_id"]), None)
     active_title = active_conv_meta["title"] if active_conv_meta else "New Chat"
 
-    chat_header_c1, chat_header_c2 = st.columns([4, 1.2])
+    chat_header_c1, chat_header_c2, chat_header_c3 = st.columns([3.2, 1.8, 1.0])
     with chat_header_c1:
         st.markdown(f"### 💬 {active_title}")
-        st.caption(f"Session `{st.session_state['active_conv_id'][:8]}` • {len(st.session_state.messages)} messages • Model: `{selected_model}`")
+        st.caption(f"Session `{st.session_state['active_conv_id'][:8]}` • {len(st.session_state.messages)} msgs • Active: `{selected_model}`")
     with chat_header_c2:
-        with st.popover("⚙️ Chat Options"):
+        def on_studio_model_change():
+            new_m = st.session_state.get("studio_model_select")
+            if new_m:
+                set_preference("selected_model", new_m)
+                st.session_state["selected_model_val"] = new_m
+
+        cur_idx = model_names.index(selected_model) if selected_model in model_names else 0
+        st.selectbox(
+            "Active Model Switcher",
+            options=model_names,
+            index=cur_idx,
+            key="studio_model_select",
+            on_change=on_studio_model_change,
+            label_visibility="collapsed",
+            help="Switch active local model directly in chat"
+        )
+    with chat_header_c3:
+        with st.popover("⚙️ Options"):
             new_title = st.text_input("Rename Chat", value=active_title, key="rename_chat_input")
             if st.button("Save Title", use_container_width=True):
                 if new_title.strip():
@@ -875,126 +1299,184 @@ if selected_page == "💬 All-in-One Studio":
                     st.session_state.messages.append({"role": "assistant", "content": full_response})
 
                 except Exception as e:
-                    err_text = f"⚠️ Inference failed: {e}\n\nEnsure Ollama is running on http://127.0.0.1:11434 with model `{selected_model}` installed."
+                    err_msg = str(e)
+                    if any(term in err_msg for term in ["0xc0000409", "CUDA error", "shared object initialization", "buffer in this application"]):
+                        err_text = (
+                            f"⚠️ **GPU Memory Overrun / CUDA Crash**: Model `{selected_model}` is too large to fit entirely in available VRAM, causing a split GPU/CPU memory crash.\n\n"
+                            f"**Recommended Solutions:**\n"
+                            f"- **Select a lighter model**: Switch to `gemma4:12b` or `llama3.2` using the model switcher above or in the Settings tab.\n"
+                            f"- **Reduce Context Length**: Set **Context Length** in the Settings tab to `2048` or `4096` tokens.\n"
+                            f"- **Safe Flash Attention**: Ollama has been reconfigured with `OLLAMA_FLASH_ATTENTION=false` to prevent CUDA memory crashes."
+                        )
+                    else:
+                        err_text = f"⚠️ Inference failed: {e}\n\nEnsure Ollama is running on http://127.0.0.1:11434 with model `{selected_model}` installed."
                     response_placeholder.error(err_text)
                     save_chat_message(st.session_state["active_conv_id"], "assistant", err_text)
                     st.session_state.messages.append({"role": "assistant", "content": err_text})
 
 
 # =========================================================
-# TAB 2: AI TOOL MEMORY HUB
+# TAB: SETTINGS & WORKSPACE CONFIGURATION
+# =========================================================
+elif selected_page == "⚙️ Settings":
+    st.markdown("### ⚙️ Workspace & Engine Settings")
+    st.caption("Configure local model inference parameters, system instructions, AI tool memories, and background engines.")
+
+    tab_inf, tab_mem, tab_diag, tab_tools = st.tabs([
+        "🤖 Model & Inference",
+        "🧠 AI Memory Hub",
+        "⚡ Engines & Diagnostics",
+        "🛠️ Tools & Sandbox"
+    ])
+
+    with tab_inf:
+        st.markdown("#### 🤖 Model Inference Parameters")
+        st.caption("Configure the active local model, inference temperature, context capacity, and core instructions.")
+
+        col_inf_left, col_inf_right = st.columns([1.5, 1])
+
+        with col_inf_left:
+            def on_settings_model_change():
+                new_m = st.session_state.get("settings_model_select")
+                if new_m:
+                    set_preference("selected_model", new_m)
+                    st.session_state["selected_model_val"] = new_m
+
+            s_idx = model_names.index(selected_model) if selected_model in model_names else 0
+            cur_sel_model = st.selectbox(
+                "Active Model",
+                options=model_names,
+                index=s_idx,
+                key="settings_model_select",
+                on_change=on_settings_model_change,
+                help="Select any local model running on your Ollama server. Persists across sessions."
+            )
+
+            # Model Specification Pill & Hardware Fit Card
+            specs_info = {
+                "llama3.2:latest": ("3.2B Parameters", "2.0 GB", "100% GPU VRAM Fit", "Fastest reasoning, lightweight & responsive"),
+                "gemma4:12b": ("11.9B Parameters", "7.4 GB", "100% GPU VRAM Fit", "Excellent multi-step reasoning, coding, and instruction following"),
+                "gpt-oss:latest": ("20.9B Parameters", "13.8 GB", "Safe Attention Active", "Deep architectural reasoning, complex multi-turn logic")
+            }
+            spec = specs_info.get(cur_sel_model, ("Local LLM", "Ollama Managed", "CUDA Accelerated", "Local offline model"))
+
+            st.markdown(f"""
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 0.85rem 1rem; margin: 0.4rem 0 1rem 0;">
+                <div style="display: flex; gap: 0.45rem; flex-wrap: wrap; margin-bottom: 0.4rem;">
+                    <span class="brand-pill pill-indigo">{spec[0]}</span>
+                    <span class="brand-pill pill-success">{spec[1]}</span>
+                    <span class="brand-pill pill-indigo">{spec[2]}</span>
+                </div>
+                <div style="font-size: 0.82rem; color: #475569;">{spec[3]}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            def on_settings_temp_change():
+                new_t = st.session_state.get("settings_temp_slider", 0.7)
+                set_preference("temperature", str(new_t))
+                st.session_state["temperature_val"] = new_t
+
+            st.slider(
+                "Temperature",
+                min_value=0.0,
+                max_value=1.0,
+                value=min(max(temperature, 0.0), 1.0),
+                step=0.05,
+                key="settings_temp_slider",
+                on_change=on_settings_temp_change,
+                help="Higher values make output more random/creative; lower values make it more focused and deterministic."
+            )
+            st.caption(
+                "🎯 **0.0 - 0.2**: Code generation & math • "
+                "⚖️ **0.3 - 0.7**: Balanced analysis • "
+                "🎨 **0.8 - 1.0**: Creative brainstorming"
+            )
+
+            def on_settings_ctx_change():
+                new_c = st.session_state.get("settings_ctx_select", 8192)
+                set_preference("context_tokens", str(new_c))
+                st.session_state["context_tokens_val"] = new_c
+
+            ctx_options = [2048, 4096, 8192, 16384, 32768]
+            ctx_idx = ctx_options.index(context_tokens) if context_tokens in ctx_options else 2
+            st.selectbox(
+                "Context Length",
+                options=ctx_options,
+                index=ctx_idx,
+                key="settings_ctx_select",
+                on_change=on_settings_ctx_change,
+                help="Context window token capacity allocated for prompt, memories, and document context."
+            )
+
+        with col_inf_right:
+            st.markdown("##### 🛡️ Hardware & Acceleration")
+            st.markdown(f"""
+            <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1.1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
+                <div style="font-weight: 700; font-size: 0.95rem; color: #0f172a; margin-bottom: 0.75rem;">RTX 4090 GPU Compute</div>
+                <div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.5rem;">
+                    <b>Compute Device:</b> NVIDIA GeForce RTX 4090 (16GB VRAM)
+                </div>
+                <div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.5rem;">
+                    <b>Engine Host:</b> <code>http://127.0.0.1:11434</code>
+                </div>
+                <div style="font-size: 0.82rem; color: #059669; margin-bottom: 0.5rem;">
+                    <b>Safe Flash Attention:</b> <span class="brand-pill pill-success">Active & Protected</span>
+                </div>
+                <div style="font-size: 0.78rem; color: #64748b; line-height: 1.45; margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid #f1f5f9;">
+                    <code>OLLAMA_FLASH_ATTENTION=false</code> prevents Windows CUDA stack buffer overrun crashes (<code>0xc0000409</code>) on large models like <code>gpt-oss:latest</code>.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("---")
+        st.markdown("##### 📜 Core System Instruction")
+        st.caption("Custom instruction prepended to all inference prompts. Saved permanently across sessions.")
+
+        def on_settings_sys_inst_change():
+            new_si = st.session_state.get("settings_sys_inst_input", "").strip()
+            if new_si:
+                set_preference("system_instruction", new_si)
+                st.session_state["sys_inst_val"] = new_si
+
+        sys_inst_text = st.text_area(
+            "System Instruction",
+            value=system_instruction,
+            key="settings_sys_inst_input",
+            height=140,
+            on_change=on_settings_sys_inst_change,
+            help="Custom system instruction. Automatically saved to database and remembered across sessions."
+        )
+
+        col_save, col_reset, col_sp = st.columns([1.2, 1.2, 3])
+        with col_save:
+            if st.button("💾 Save Instruction", use_container_width=True, type="primary"):
+                curr_val = st.session_state.get("settings_sys_inst_input", sys_inst_text).strip()
+                set_preference("system_instruction", curr_val)
+                st.session_state["sys_inst_val"] = curr_val
+                st.toast("System instruction permanently saved!", icon="💾")
+        with col_reset:
+            if st.button("↺ Reset to Default", use_container_width=True):
+                set_preference("system_instruction", DEFAULT_SYSTEM_INSTRUCTION)
+                st.session_state["sys_inst_val"] = DEFAULT_SYSTEM_INSTRUCTION
+                st.session_state["settings_sys_inst_input"] = DEFAULT_SYSTEM_INSTRUCTION
+                st.toast("Reset to default system instruction!", icon="↺")
+                st.rerun()
+
+    with tab_mem:
+        render_memory_hub_section()
+
+    with tab_diag:
+        render_diagnostics_section()
+
+    with tab_tools:
+        render_tools_section()
+
+
+# =========================================================
+# TAB 2: AI TOOL MEMORY HUB (DIRECT VIEW FOR DEV MODE)
 # =========================================================
 elif selected_page == "🧠 AI Tool Memory Hub":
-    st.markdown("### 🧠 AI Tool Memory Hub")
-    st.caption("Import, synchronize, and activate guidelines from ChatGPT, Claude, Cursor, Copilot, and Gemini into your local LLM inference.")
-
-    # Stats Row
-    s1, s2, s3, s4 = st.columns(4)
-    with s1:
-        st.metric("Total Memories", len(stored_memories))
-    with s2:
-        st.metric("Active in Prompts", len(active_memories), delta=f"{len(active_memories)} active")
-    with s3:
-        unique_tools = len(set((m.get("source_tool") or "custom").lower() for m in stored_memories))
-        st.metric("Connected AI Tools", unique_tools if stored_memories else 1)
-    with s4:
-        st.metric("Local Sync Status", "Synced with Ollama")
-
-    st.markdown("---")
-
-    # 1-Click Import Presets
-    st.markdown("#### ⚡ 1-Click Quick Import Presets")
-    presets = [
-        {
-            "tool": "chatgpt",
-            "name": "ChatGPT Custom Instructions",
-            "desc": "Concise, typed code, architectural reasoning before diffs.",
-            "content": "Always provide concise, production-ready code with type annotations.\nPrefer modern standard libraries over unnecessary external packages.\nExplain the architectural reasoning before providing code diffs."
-        },
-        {
-            "tool": "claude",
-            "name": "Claude Project Memory",
-            "desc": "Clean Architecture, separation of concerns, and type safety.",
-            "content": "Adhere to Clean Architecture principles.\nSeparate domain logic, controllers, and data storage access.\nTreat documentation and type safety as first-class citizens."
-        },
-        {
-            "tool": "cursor",
-            "name": "Cursor Rules (.cursorrules)",
-            "desc": "Minimal non-destructive edits and explicit TypeScript types.",
-            "content": "Never rewrite entire files when single function changes suffice.\nUse explicit TypeScript types instead of 'any'.\nEnsure all FastAPI endpoints have request and response Pydantic models."
-        },
-        {
-            "tool": "copilot",
-            "name": "GitHub Copilot Instructions",
-            "desc": "Python 3.12+ strict typing, pytest suites, and SQLite WAL.",
-            "content": "Python 3.12+ with strict typing and pytest suites.\nReact 18 with functional components, Tailwind utility classes, and TypeScript.\nSQLite with WAL mode and transaction isolation."
-        }
-    ]
-
-    cols = st.columns(4)
-    for i, p in enumerate(presets):
-        with cols[i]:
-            st.markdown(f"**{p['name']}**")
-            st.caption(p["desc"])
-            if st.button(f"Import {p['tool'].title()}", key=f"import_preset_{p['tool']}", use_container_width=True):
-                new_id = str(uuid.uuid4())
-                now = datetime.datetime.now().isoformat()
-                run_async(db.execute(
-                    "INSERT INTO user_memories (id, key, content, source_tool, category, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
-                    (new_id, f"{p['tool'].title()} Instructions", p["content"], p["tool"], "instructions", now, now)
-                ))
-                st.success(f"Imported {p['name']}!")
-                st.rerun()
-
-    st.markdown("---")
-
-    # Add Custom Memory Form
-    with st.expander("➕ Add Custom Memory Entry", expanded=False):
-        with st.form("add_memory_form"):
-            col_k, col_s, col_c = st.columns([2, 1, 1])
-            with col_k:
-                new_key = st.text_input("Memory Key / Title", placeholder="e.g. FastAPI Coding Guidelines")
-            with col_s:
-                new_source = st.selectbox("Source Tool", ["chatgpt", "claude", "cursor", "copilot", "gemini", "custom"])
-            with col_c:
-                new_cat = st.selectbox("Category", ["instructions", "rules", "persona", "tech_stack", "general"])
-            
-            new_content = st.text_area("Memory Content / Rules", placeholder="Type or paste memory guidelines here...", height=100)
-            submit_mem = st.form_submit_button("Save to Memory Hub")
-
-            if submit_mem and new_key and new_content:
-                new_id = str(uuid.uuid4())
-                now = datetime.datetime.now().isoformat()
-                run_async(db.execute(
-                    "INSERT INTO user_memories (id, key, content, source_tool, category, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
-                    (new_id, new_key.strip(), new_content.strip(), new_source, new_cat, now, now)
-                ))
-                st.success(f"Added memory: {new_key}")
-                st.rerun()
-
-    # Stored Memories List
-    st.markdown(f"#### 📚 Stored Memories ({len(stored_memories)})")
-    if not stored_memories:
-        st.info("No memories stored yet. Click one of the 1-click presets above to import guidelines!")
-    else:
-        for mem in stored_memories:
-            with st.container():
-                col_info, col_toggle, col_del = st.columns([5, 1, 1])
-                with col_info:
-                    status_dot = "🟢" if mem["enabled"] else "⚪"
-                    source_tag = mem.get("source_tool", "custom").upper()
-                    st.markdown(f"**{status_dot} {mem['key']}** `{source_tag}` `{mem.get('category', 'general')}`")
-                    st.code(mem["content"], language="text")
-                with col_toggle:
-                    toggle_label = "Mute" if mem["enabled"] else "Activate"
-                    if st.button(toggle_label, key=f"tog_{mem['id']}", use_container_width=True):
-                        new_state = 0 if mem["enabled"] else 1
-                        run_async(db.execute("UPDATE user_memories SET enabled = ?, updated_at = ? WHERE id = ?", (new_state, datetime.datetime.now().isoformat(), mem["id"])))
-                        st.rerun()
-                with col_del:
-                    if st.button("Delete", key=f"del_{mem['id']}", use_container_width=True):
-                        run_async(db.execute("DELETE FROM user_memories WHERE id = ?", (mem["id"],)))
-                        st.rerun()
+    render_memory_hub_section()
 
 
 # =========================================================
@@ -1309,80 +1791,14 @@ elif selected_page == "👁️ Vision Multimodal":
 
 
 # =========================================================
-# TAB 6: AI TOOLS
+# TAB 6: AI TOOLS (DIRECT VIEW FOR DEV MODE)
 # =========================================================
 elif selected_page == "🛠️ AI Tools":
-    st.markdown("### 🛠️ AI Tools & Function Calling")
-    st.caption("Inspect and execute sandboxed backend tools.")
-
-    available_tools = tool_registry.get_all_definitions()
-    tool_names = [t.name for t in available_tools]
-
-    sel_tool_name = st.selectbox("Select Tool", tool_names)
-    tool_obj = next((t for t in available_tools if t.name == sel_tool_name), None)
-
-    if tool_obj:
-        st.markdown(f"**Description:** {tool_obj.description}")
-        st.markdown(f"**Category:** `{tool_obj.category}`")
-
-        # Dynamic parameter inputs
-        params = {}
-        if tool_obj.parameters and tool_obj.parameters.get("properties"):
-            st.markdown("#### Tool Parameters")
-            for prop_name, prop_data in tool_obj.parameters["properties"].items():
-                default_val = "25 * 4 + 15" if prop_name == "expression" else "README.md" if prop_name == "path" else ""
-                params[prop_name] = st.text_input(f"{prop_name} ({prop_data.get('type', 'string')})", value=default_val)
-
-        if st.button("⚡ Execute Tool", type="primary"):
-            status_box = st.empty()
-            status_box.markdown(
-                render_thinking_badge("processing", f"Executing sandboxed tool '{sel_tool_name}'..."),
-                unsafe_allow_html=True
-            )
-            res = run_async(tool_registry.execute_tool(name=sel_tool_name, arguments=params, approved=True))
-            status_box.empty()
-            if res.success:
-                st.success("Tool execution successful!")
-                st.json(res.result)
-            else:
-                st.error(f"Execution failed: {res.error}")
+    render_tools_section()
 
 
 # =========================================================
-# TAB 7: DIAGNOSTICS & MODELS
+# TAB 7: DIAGNOSTICS & MODELS (DIRECT VIEW FOR DEV MODE)
 # =========================================================
 elif selected_page == "⚙️ Diagnostics & Models":
-    st.markdown("### ⚙️ Diagnostics & System Health")
-    st.caption("Monitor your offline hardware, Ollama server, ComfyUI engine, and SQLite database.")
-
-    col_d1, col_d2 = st.columns(2)
-
-    with col_d1:
-        st.markdown("#### 🤖 Ollama Engine")
-        st.write(f"**Endpoint:** `{settings.ollama_base_url}`")
-        st.write(f"**Status:** {'🟢 Healthy' if ollama_online else '🔴 Unreachable'}")
-        st.write(f"**Installed Models:** {len(models_list)}")
-        
-        # Pull model form
-        with st.form("pull_model_form"):
-            new_model_name = st.text_input("Install New Model", placeholder="e.g. qwen2.5-coder:7b")
-            pull_btn = st.form_submit_button("📥 Pull Model via Ollama")
-            if pull_btn and new_model_name:
-                st.info(f"Triggering pull for `{new_model_name}` in background...")
-                # Could run background pull
-
-    with col_d2:
-        st.markdown("#### 🎨 ComfyUI Engine")
-        st.write(f"**Endpoint:** `{settings.comfyui_base_url}`")
-        st.write(f"**Status:** {'🟢 Healthy' if comfy_online else '🟠 Idle / Offline'}")
-        local_checkpoints = comfyui_service.get_local_checkpoints()
-        st.write(f"**Checkpoints in Models Folder:** {len(local_checkpoints)}")
-        if local_checkpoints:
-            for ck in local_checkpoints:
-                st.code(f"models/checkpoints/{ck}")
-
-    st.markdown("---")
-    st.markdown("#### 💾 Storage & Database")
-    st.write(f"**SQLite Database Path:** `{settings.db_path}`")
-    st.write(f"**Workspace Root:** `{settings.workspace_root}`")
-    st.write(f"**Generated Images:** `{settings.generated_images_dir}`")
+    render_diagnostics_section()

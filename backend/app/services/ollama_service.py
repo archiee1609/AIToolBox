@@ -1,6 +1,13 @@
+import os
+import sys
 import json
-import httpx
+import shutil
+import asyncio
+import datetime
+import subprocess
+from pathlib import Path
 from typing import List, Dict, Any, Optional, AsyncGenerator
+import httpx
 from app.core.config import settings
 from app.core.logging import logger
 from app.schemas.models import ModelDetails, ModelCapabilities, ModelOptions
@@ -10,11 +17,56 @@ PREFERRED_MODEL_HINTS = ["gpt-oss", "gemma4:12b"]
 class OllamaService:
     def __init__(self, base_url: Optional[str] = None):
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
+        self._process: Optional[subprocess.Popen] = None
 
-    async def check_health(self) -> Dict[str, Any]:
+    def find_ollama_executable(self) -> Optional[Path]:
+        """Locates the Ollama executable on the system."""
+        # 1. System PATH
+        for binary_name in ["ollama", "ollama.exe"]:
+            found = shutil.which(binary_name)
+            if found:
+                return Path(found)
+
+        # 2. Windows standard installation locations
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            candidate = Path(local_app_data) / "Programs" / "Ollama" / "ollama.exe"
+            if candidate.exists():
+                return candidate
+
+        home_dir = Path.home()
+        candidate = home_dir / "AppData" / "Local" / "Programs" / "Ollama" / "ollama.exe"
+        if candidate.exists():
+            return candidate
+
+        prog_files = os.environ.get("ProgramFiles")
+        if prog_files:
+            candidate = Path(prog_files) / "Ollama" / "ollama.exe"
+            if candidate.exists():
+                return candidate
+
+        prog_files_x86 = os.environ.get("ProgramFiles(x86)")
+        if prog_files_x86:
+            candidate = Path(prog_files_x86) / "Ollama" / "ollama.exe"
+            if candidate.exists():
+                return candidate
+
+        # 3. Unix standard locations
+        for unix_path in [Path("/usr/local/bin/ollama"), Path("/usr/bin/ollama"), Path("/bin/ollama")]:
+            if unix_path.exists():
+                return unix_path
+
+        return None
+
+    async def is_server_reachable(self, timeout: float = 3.0) -> bool:
+        """Quick check if Ollama server responds on base_url."""
+        health = await self.check_health(timeout=timeout)
+        return health.get("reachable", False)
+
+    async def check_health(self, timeout: float = 5.0) -> Dict[str, Any]:
         """Checks whether Ollama is reachable and returns its version."""
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 res = await client.get(f"{self.base_url}/api/version")
                 if res.status_code == 200:
                     data = res.json()
@@ -22,6 +74,77 @@ class OllamaService:
                 return {"reachable": False, "version": None, "error": f"HTTP {res.status_code}"}
         except Exception as e:
             return {"reachable": False, "version": None, "error": str(e)}
+
+    async def start_service(self, timeout_seconds: int = 30) -> bool:
+        """Launches the Ollama server in background if not already running."""
+        if await self.is_server_reachable(timeout=2.0):
+            logger.info("Ollama server is already running.")
+            return True
+
+        ollama_bin = self.find_ollama_executable()
+        if not ollama_bin:
+            logger.error("Ollama executable was not found on this system.")
+            return False
+
+        logger.info(f"Starting local Ollama server from {ollama_bin}...")
+        try:
+            log_dir = settings.base_dir / "data" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / "ollama.log"
+            log_file = open(log_path, "a", encoding="utf-8", errors="replace")
+            log_file.write(f"\n--- Ollama session started at {datetime.datetime.now().isoformat()} with {ollama_bin} serve ---\n")
+            log_file.flush()
+
+            creationflags = 0
+            if sys.platform == "win32":
+                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000  # CREATE_NO_WINDOW
+
+            env = os.environ.copy()
+            # Disable Flash Attention by default to prevent CUDA stack buffer overrun
+            # (exit code 0xc0000409 / shared object initialization failed) when models
+            # split between GPU VRAM and CPU system memory.
+            env["OLLAMA_FLASH_ATTENTION"] = "false"
+
+            self._process = subprocess.Popen(
+                [str(ollama_bin), "serve"],
+                stdout=log_file,
+                stderr=log_file,
+                creationflags=creationflags,
+                env=env
+            )
+
+            # Wait for Ollama to complete GPU discovery and bind to port
+            for sec in range(timeout_seconds):
+                await asyncio.sleep(1.0)
+                if await self.is_server_reachable(timeout=2.0):
+                    logger.info(f"Ollama server started and verified reachable on {self.base_url} (in {sec+1}s).")
+                    return True
+                if self._process and self._process.poll() is not None:
+                    logger.error(f"Ollama process exited prematurely with code {self._process.returncode}")
+                    return False
+
+            return await self.is_server_reachable(timeout=3.0)
+        except Exception as e:
+            logger.error(f"Failed to start Ollama process: {e}")
+            return False
+
+    async def stop_service(self) -> bool:
+        """Stops the Ollama process if launched by this service."""
+        if self._process and self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=5)
+            except Exception:
+                self._process.kill()
+            self._process = None
+            return True
+        return False
+
+    async def ensure_running(self) -> bool:
+        """Ensures Ollama is running, starting it if offline."""
+        if await self.is_server_reachable(timeout=2.0):
+            return True
+        return await self.start_service()
 
     async def list_models(self) -> List[ModelDetails]:
         """Discovers all locally installed models from Ollama."""

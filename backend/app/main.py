@@ -18,7 +18,11 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.app_name} v{settings.app_version} on {settings.host}:{settings.port}")
     await run_migrations()
     
-    # Check Ollama and log discovered models
+    # Check Ollama and auto-start if needed
+    if not await ollama_service.is_server_reachable():
+        logger.info("Ollama is not running. Auto-starting local Ollama engine...")
+        await ollama_service.start_service()
+
     health = await ollama_service.check_health()
     if health["reachable"]:
         models = await ollama_service.list_models()
@@ -42,6 +46,11 @@ async def lifespan(app: FastAPI):
     try:
         from app.services.comfyui_service import comfyui_service
         await comfyui_service.stop_service()
+    except Exception:
+        pass
+    try:
+        from app.services.ollama_service import ollama_service
+        await ollama_service.stop_service()
     except Exception:
         pass
 

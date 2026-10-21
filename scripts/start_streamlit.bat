@@ -9,9 +9,12 @@ echo.
 set ROOT_DIR=%~dp0..
 cd /d "%ROOT_DIR%"
 
-:: 1. Check Ollama reachability
+:: Set CUDA safety flags for Ollama
+set OLLAMA_FLASH_ATTENTION=false
+
+:: 1. Check & start local Ollama service
 echo [*] Checking local Ollama service...
-powershell -NoProfile -Command "try { $v = (Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/version' -TimeoutSec 2).version; Write-Host '[+] Ollama connected! Version:' $v -ForegroundColor Green } catch { Write-Host '[!] Warning: Ollama is not running on http://127.0.0.1:11434. Start Ollama to enable AI chat.' -ForegroundColor Yellow }"
+powershell -NoProfile -Command "try { $v = (Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/version' -TimeoutSec 2).version; Write-Host '[+] Ollama is ONLINE! Version:' $v -ForegroundColor Green } catch { Write-Host '[*] Auto-starting local Ollama service...' -ForegroundColor Green; Start-Process ollama -ArgumentList 'serve' -WindowStyle Hidden -ErrorAction SilentlyContinue; Start-Sleep -Seconds 3 }"
 
 :: 2. Launch ComfyUI service if present
 if exist "%ROOT_DIR%\ComfyUI\main.py" (
