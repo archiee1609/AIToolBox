@@ -73,6 +73,7 @@ from app.services.comfyui_service import comfyui_service, POPULAR_MODELS, parse_
 from app.services.tool_registry import tool_registry
 from app.services.coding_agent_service import coding_agent_service
 from app.services.document_service import process_uploaded_files, extract_file_data
+from app.services.model_download_service import model_download_manager
 from app.schemas.image import ImageGenerateRequest
 
 @st.cache_data(ttl=30)
@@ -326,17 +327,44 @@ st.markdown("""
         border-left: 3.5px solid #10b981;
     }
 
-    /* Chat Input Bar */
+    /* Chat Input Bar - Subtle Animated Border */
     [data-testid="stChatInput"] {
         border-radius: 1.25rem !important;
         border: 1.5px solid #cbd5e1 !important;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03) !important;
         background: #ffffff !important;
-        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        animation: promptBorderGlow 4s ease-in-out infinite !important;
+        transition: border-color 0.25s ease, box-shadow 0.25s ease;
+    }
+    [data-testid="stChatInput"]:hover {
+        border-color: #a5b4fc !important;
+        box-shadow: 0 3px 12px rgba(99, 102, 241, 0.12) !important;
     }
     [data-testid="stChatInput"]:focus-within {
         border-color: #6366f1 !important;
-        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.16) !important;
+        animation: promptBorderActive 3s ease-in-out infinite !important;
+    }
+
+    @keyframes promptBorderGlow {
+        0%, 100% {
+            border-color: #cbd5e1;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03), 0 0 0 1px rgba(99, 102, 241, 0.08);
+        }
+        50% {
+            border-color: #818cf8;
+            box-shadow: 0 4px 14px rgba(99, 102, 241, 0.14), 0 0 8px rgba(99, 102, 241, 0.22);
+        }
+    }
+
+    @keyframes promptBorderActive {
+        0%, 100% {
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3.5px rgba(99, 102, 241, 0.22), 0 4px 16px rgba(99, 102, 241, 0.15);
+        }
+        50% {
+            border-color: #06b6d4;
+            box-shadow: 0 0 0 3.5px rgba(6, 182, 212, 0.26), 0 4px 18px rgba(6, 182, 212, 0.20);
+        }
     }
 
     /* Tabs Styling */
@@ -449,20 +477,153 @@ st.markdown("""
             border-color: #e2e8f0;
         }
     }
+
+    /* Windows XP Classic Marquee Animation */
+    @keyframes winxp-marq {
+        0% { background-position: 0 0; }
+        100% { background-position: 100px 0; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Status Badge Helper
-def render_thinking_badge(phase: str = "thinking", details: str = "") -> str:
-    if phase == "analysing":
-        text = details or "Analysing prompt & context..."
-        return f'<div class="ai-thinking-box"><span class="ai-thinking-dots"><span class="ai-thinking-dot"></span><span class="ai-thinking-dot"></span><span class="ai-thinking-dot"></span></span><span class="ai-analysing-shimmer">{text}</span></div>'
-    elif phase == "processing":
-        text = details or "Processing workspace data..."
-        return f'<div class="ai-thinking-box"><span class="ai-thinking-dots"><span class="ai-thinking-dot"></span><span class="ai-thinking-dot"></span><span class="ai-thinking-dot"></span></span><span class="ai-processing-text">{text}</span></div>'
-    else:
-        text = details or "Thinking..."
-        return f'<div class="ai-thinking-box"><span class="ai-thinking-dots"><span class="ai-thinking-dot"></span><span class="ai-thinking-dot"></span><span class="ai-thinking-dot"></span></span><span>{text}</span></div>'
+from app.core.ui_components import render_thinking_badge, render_winxp_progress_bar
+
+
+def is_report_content(content: str) -> bool:
+    """Detects whether a message contains an executive or technical report."""
+    if not content or not isinstance(content, str):
+        return False
+    indicators = [
+        content.startswith("## 📄"),
+        "📄 Executive Report" in content,
+        "# Executive Summary" in content,
+        "## Executive Summary" in content,
+        "### Executive Summary" in content,
+        "# Actionable Recommendations" in content,
+        "## Actionable Recommendations" in content,
+        "## Key Findings" in content,
+        "# Key Findings" in content
+    ]
+    return any(indicators)
+
+
+@st.cache_data(show_spinner=False)
+def get_cached_report_bundle(markdown_content: str, default_title: str = "Executive Report") -> Dict[str, Any]:
+    """Caches the generated report file bytes so downloads are instantaneous."""
+    from app.services.report_export_service import export_report_bundle
+    return export_report_bundle(markdown_content, default_title)
+
+
+def render_report_export_toolbar(markdown_content: str, default_title: str = "Executive Report", key_prefix: str = "rep"):
+    """Renders a sleek download toolbar with buttons for PDF, Word, Excel, PPTX, Markdown, and ZIP bundle."""
+    try:
+        bundle = get_cached_report_bundle(markdown_content, default_title)
+    except Exception as e:
+        st.caption(f"Export service unavailable: {e}")
+        return
+
+    st.markdown("""
+    <div style="margin-top: 0.85rem; margin-bottom: 0.35rem; display: flex; align-items: center; justify-content: space-between; border-top: 1px dashed #cbd5e1; padding-top: 0.65rem;">
+        <span style="font-size: 0.8rem; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.05em;">
+            📥 Download Report Files
+        </span>
+        <span style="font-size: 0.72rem; color: #94a3b8;">
+            PDF • Word (.docx) • Excel (.xlsx) • PowerPoint (.pptx) • Markdown • All (.zip)
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2, c3, c4, c5, c6 = st.columns([1.1, 1.1, 1.1, 1.1, 1.1, 1.2])
+
+    # 1. PDF
+    with c1:
+        pdf_item = bundle.get("pdf", {})
+        if "bytes" in pdf_item:
+            st.download_button(
+                label=f"📕 PDF ({pdf_item['size_kb']} KB)",
+                data=pdf_item["bytes"],
+                file_name=pdf_item["filename"],
+                mime=pdf_item["mime"],
+                key=f"{key_prefix}_pdf",
+                use_container_width=True
+            )
+        else:
+            st.button("📕 PDF", disabled=True, key=f"{key_prefix}_pdf_dis", use_container_width=True)
+
+    # 2. Word (.docx)
+    with c2:
+        docx_item = bundle.get("docx", {})
+        if "bytes" in docx_item:
+            st.download_button(
+                label=f"📘 Word ({docx_item['size_kb']} KB)",
+                data=docx_item["bytes"],
+                file_name=docx_item["filename"],
+                mime=docx_item["mime"],
+                key=f"{key_prefix}_docx",
+                use_container_width=True
+            )
+        else:
+            st.button("📘 Word", disabled=True, key=f"{key_prefix}_docx_dis", use_container_width=True)
+
+    # 3. Excel (.xlsx)
+    with c3:
+        xlsx_item = bundle.get("xlsx", {})
+        if "bytes" in xlsx_item:
+            st.download_button(
+                label=f"📊 Excel ({xlsx_item['size_kb']} KB)",
+                data=xlsx_item["bytes"],
+                file_name=xlsx_item["filename"],
+                mime=xlsx_item["mime"],
+                key=f"{key_prefix}_xlsx",
+                use_container_width=True
+            )
+        else:
+            st.button("📊 Excel", disabled=True, key=f"{key_prefix}_xlsx_dis", use_container_width=True)
+
+    # 4. PowerPoint (.pptx)
+    with c4:
+        pptx_item = bundle.get("pptx", {})
+        if "bytes" in pptx_item:
+            st.download_button(
+                label=f"📙 PPT ({pptx_item['size_kb']} KB)",
+                data=pptx_item["bytes"],
+                file_name=pptx_item["filename"],
+                mime=pptx_item["mime"],
+                key=f"{key_prefix}_pptx",
+                use_container_width=True
+            )
+        else:
+            st.button("📙 PPT", disabled=True, key=f"{key_prefix}_pptx_dis", use_container_width=True)
+
+    # 5. Markdown (.md)
+    with c5:
+        md_item = bundle.get("md", {})
+        if "bytes" in md_item:
+            st.download_button(
+                label=f"📝 Markdown ({md_item['size_kb']} KB)",
+                data=md_item["bytes"],
+                file_name=md_item["filename"],
+                mime=md_item["mime"],
+                key=f"{key_prefix}_md",
+                use_container_width=True
+            )
+        else:
+            st.button("📝 Markdown", disabled=True, key=f"{key_prefix}_md_dis", use_container_width=True)
+
+    # 6. All Formats (.zip)
+    with c6:
+        zip_item = bundle.get("zip", {})
+        if "bytes" in zip_item:
+            st.download_button(
+                label=f"📦 All (.zip)",
+                data=zip_item["bytes"],
+                file_name=zip_item["filename"],
+                mime=zip_item["mime"],
+                key=f"{key_prefix}_zip",
+                use_container_width=True
+            )
+        else:
+            st.button("📦 All (.zip)", disabled=True, key=f"{key_prefix}_zip_dis", use_container_width=True)
 
 # Initialize Database and Ensure Migrations
 @st.cache_resource
@@ -698,16 +859,15 @@ with st.sidebar:
     # All features are unified in the All-in-One Studio & Settings. Developer tabs preserved in code.
     ALL_MODULE_PAGES = [
         "💬 All-in-One Studio",
-        "⚙️ Settings",
+        "⚙️ More",
         "🧠 AI Tool Memory Hub",
         "🎨 ComfyUI Image Lab",
         "💻 Autonomous Coding Agent",
         "👁️ Vision Multimodal",
-        "🛠️ AI Tools",
         "⚙️ Diagnostics & Models"
     ]
     show_all_modules = st.query_params.get("show_all") in ["1", "true"]
-    nav_options = ALL_MODULE_PAGES if show_all_modules else ["💬 All-in-One Studio", "⚙️ Settings"]
+    nav_options = ALL_MODULE_PAGES if show_all_modules else ["💬 All-in-One Studio", "⚙️ More"]
 
     selected_page = st.radio(
         "Navigation",
@@ -971,51 +1131,66 @@ def render_diagnostics_section():
         adapter_badges = " ".join([f"<code style='background: #e2e8f0; color: #1e293b; padding: 2px 6px; border-radius: 4px; font-size: 0.78rem; margin-right: 4px;'>{a}</code>" for a in adapters])
         adapters_html = f"<div style='margin-top: 6px; font-size: 0.82rem; color: #475569;'><b>Display Adapters:</b> {adapter_badges}</div>"
 
-    st.markdown(f"""
-    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.25rem;">
-        <div>
-            <span style="font-weight: 600; color: #1e293b;">⚡ Primary Accelerator:</span> 
-            <span style="color: #0284c7; font-weight: 600;">{accel.get('name', 'CPU')}</span> — 
-            <span style="color: #475569; font-size: 0.88rem;">{accel.get('details', '')}</span>
-        </div>
-        {adapters_html}
-    </div>
-    """, unsafe_allow_html=True)
+    accel_box_html = (
+        f'<div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.25rem;">'
+        f'<div><span style="font-weight: 600; color: #1e293b;">⚡ Primary Accelerator:</span> '
+        f'<span style="color: #0284c7; font-weight: 600;">{accel.get("name", "CPU")}</span> — '
+        f'<span style="color: #475569; font-size: 0.88rem;">{accel.get("details", "")}</span></div>'
+        f'{adapters_html}'
+        f'</div>'
+    )
+    st.markdown(accel_box_html, unsafe_allow_html=True)
 
     # 2. Real-Time Resource Telemetry & Auto-Balancing Governor
-    lb_prof = get_cached_load_profile()
-    lb_tele = lb_prof.get("telemetry", {})
-    lb_cpu_pct = lb_tele.get("cpu", {}).get("percent_used", 0.0)
-    lb_mem_pct = lb_tele.get("memory", {}).get("percent_used", 0.0)
-    lb_vram_pct = lb_tele.get("accelerator", {}).get("vram_percent_used", 0.0)
+    @st.fragment(run_every="2s")
+    def render_live_resource_governor():
+        live_tele = get_live_telemetry(force_refresh=True)
+        lb_prof = get_current_load_profile(live_tele)
+        lb_cpu_pct = live_tele.get("cpu", {}).get("percent_used", 0.0)
+        lb_mem = live_tele.get("memory", {})
+        lb_mem_pct = lb_mem.get("percent_used", 0.0)
+        lb_avail_ram = lb_mem.get("available_gb", 0.0)
 
-    st.markdown("##### ⚡ Auto Load Balancer & Real-Time Resource Governor")
-    col_g1, col_g2, col_g3 = st.columns(3)
-    with col_g1:
-        st.metric("CPU Utilization", f"{lb_cpu_pct:.1f}%")
-        st.progress(min(max(lb_cpu_pct / 100.0, 0.0), 1.0))
-    with col_g2:
-        st.metric("System RAM Used", f"{lb_mem_pct:.1f}%", f"{lb_tele.get('memory', {}).get('available_gb', 0)} GB Free")
-        st.progress(min(max(lb_mem_pct / 100.0, 0.0), 1.0))
-    with col_g3:
-        vram_lbl = f"{lb_tele.get('accelerator', {}).get('free_vram_gb', 0)} GB Free" if lb_tele.get('accelerator', {}).get('total_vram_gb', 0) > 0 else "Unified / CPU"
-        st.metric("VRAM / Memory Load", f"{lb_vram_pct:.1f}%", vram_lbl)
-        st.progress(min(max(lb_vram_pct / 100.0, 0.0), 1.0))
+        accel = live_tele.get("accelerator", {})
+        lb_vram_pct = accel.get("vram_percent_used", 0.0)
+        total_vram = accel.get("total_vram_gb", 0.0)
+        free_vram = accel.get("free_vram_gb", 0.0)
 
-    st.markdown(f"""
-    <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.85rem 1.1rem; margin-top: 0.5rem; margin-bottom: 1.25rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
-            <span style="font-weight: 700; color: #0f172a; font-size: 0.9rem;">
-                Active Balance Profile: <span style="color: {lb_prof['color']};">{lb_prof['title']}</span>
-            </span>
-            <span class="brand-pill pill-success" style="font-size: 0.75rem;">Automatic Balancing Active</span>
-        </div>
-        <div style="font-size: 0.82rem; color: #475569; line-height: 1.45;">
-            {lb_prof['description']}<br>
-            <b>Auto-Allocated:</b> {lb_prof['optimal_threads']} CPU Threads • Batch Size: {lb_prof['prompt_batch_size']} • Safe Context Ceiling: {lb_prof['max_safe_context']} tokens • ComfyUI Flags: <code>{' '.join(lb_prof['comfyui_cli_flags']) or 'Native Metal'}</code>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+        head_c1, head_c2 = st.columns([3, 1])
+        with head_c1:
+            st.markdown("##### ⚡ Auto Load Balancer & Real-Time Resource Governor")
+        with head_c2:
+            st.markdown('<div style="text-align: right; padding-top: 4px;"><span class="brand-pill pill-success" style="font-size: 0.72rem;">🟢 Real-Time (2s)</span></div>', unsafe_allow_html=True)
+
+        col_g1, col_g2, col_g3 = st.columns(3)
+        with col_g1:
+            st.metric("CPU Utilization", f"{lb_cpu_pct:.1f}%")
+            st.progress(min(max(lb_cpu_pct / 100.0, 0.0), 1.0))
+        with col_g2:
+            st.metric("System RAM Used", f"{lb_mem_pct:.1f}%", f"{lb_avail_ram:.1f} GB Free")
+            st.progress(min(max(lb_mem_pct / 100.0, 0.0), 1.0))
+        with col_g3:
+            vram_lbl = f"{free_vram:.1f} GB Free" if total_vram > 0 else "Unified / CPU"
+            st.metric("VRAM / Memory Load", f"{lb_vram_pct:.1f}%", vram_lbl)
+            st.progress(min(max(lb_vram_pct / 100.0, 0.0), 1.0))
+
+        profile_card_html = (
+            f'<div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.85rem 1.1rem; margin-top: 0.5rem; margin-bottom: 1.25rem;">'
+            f'<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">'
+            f'<span style="font-weight: 700; color: #0f172a; font-size: 0.9rem;">'
+            f'Active Balance Profile: <span style="color: {lb_prof["color"]};">{lb_prof["title"]}</span>'
+            f'</span>'
+            f'<span class="brand-pill pill-success" style="font-size: 0.75rem;">Automatic Balancing Active</span>'
+            f'</div>'
+            f'<div style="font-size: 0.82rem; color: #475569; line-height: 1.45;">'
+            f'{lb_prof["description"]}<br>'
+            f'<b>Auto-Allocated:</b> {lb_prof["optimal_threads"]} CPU Threads • Batch Size: {lb_prof["prompt_batch_size"]} • Safe Context Ceiling: {lb_prof["max_safe_context"]} tokens • ComfyUI Flags: <code>{" ".join(lb_prof["comfyui_cli_flags"]) or "Native Metal"}</code>'
+            f'</div>'
+            f'</div>'
+        )
+        st.markdown(profile_card_html, unsafe_allow_html=True)
+
+    render_live_resource_governor()
 
     col_d1, col_d2 = st.columns(2)
 
@@ -1031,19 +1206,116 @@ def render_diagnostics_section():
                     run_async(ollama_service.start_service())
                     st.rerun()
 
-        # Installed models details table
+        # Installed models details table with Remove Model feature
         if models_list:
-            with st.expander("📦 Installed Models Breakdown", expanded=False):
+            with st.expander("📦 Installed Models Management", expanded=True):
                 for m in models_list:
                     size_gb = round(getattr(m, "size", 0) / (1024**3), 2)
-                    st.markdown(f"• **`{m.name}`** ({size_gb} GB)")
+                    col_m_info, col_m_del = st.columns([3.6, 1.4])
+                    with col_m_info:
+                        st.markdown(f"• **`{m.name}`** <span style='color: #64748b; font-size: 0.82rem;'>({size_gb} GB)</span>", unsafe_allow_html=True)
+                    with col_m_del:
+                        with st.popover("🗑️ Remove", use_container_width=True):
+                            st.write(f"Delete model **`{m.name}`**?")
+                            st.caption(f"Frees {size_gb} GB from Ollama storage.")
+                            if st.button("⚠️ Confirm Delete", key=f"del_confirm_{m.name}", type="primary", use_container_width=True):
+                                try:
+                                    run_async(ollama_service.delete_model(m.name))
+                                    st.success(f"Model '{m.name}' removed.")
+                                    get_cached_models.clear()
+                                    time.sleep(0.3)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Failed to remove model: {e}")
 
         # Pull model form
         with st.form("pull_model_form"):
-            new_model_name = st.text_input("Install New Model from Ollama Registry", placeholder="e.g. qwen2.5-coder:7b")
+            new_model_name = st.text_input("Install New Model from Ollama Registry", placeholder="e.g. qwen2.5:14b or qwen2.5-coder:7b")
             pull_btn = st.form_submit_button("📥 Pull Model via Ollama")
-            if pull_btn and new_model_name:
-                st.info(f"Triggering pull for `{new_model_name}` in background...")
+
+        if pull_btn and new_model_name and new_model_name.strip():
+            target_model = new_model_name.strip()
+            model_download_manager.start_download(target_model)
+            st.rerun()
+
+        # Background Download Monitor with Stop/Cancel & Cross-Tab Persistence
+        @st.fragment(run_every="1s")
+        def render_download_progress_monitor():
+            job = model_download_manager.get_active_or_latest_job()
+            if not job:
+                return
+
+            m_name = job["model"]
+            st_val = job["status"]
+            pct = job.get("percent", 0.0)
+            detail = job.get("detail", "")
+            is_ind = job.get("is_indeterminate", False)
+
+            if st_val == "downloading":
+                col_pb, col_stop = st.columns([3.8, 1.2])
+                with col_pb:
+                    st.markdown(
+                        render_winxp_progress_bar(
+                            percent=pct,
+                            status="downloading",
+                            detail=detail,
+                            is_indeterminate=is_ind
+                        ),
+                        unsafe_allow_html=True
+                    )
+                with col_stop:
+                    st.write("")
+                    st.write("")
+                    if st.button("⏹️ Stop / Cancel", key=f"stop_dl_btn_{m_name}", type="secondary", use_container_width=True):
+                        model_download_manager.stop_download(m_name)
+                        st.rerun()
+
+            elif st_val == "complete":
+                col_pb, col_ack = st.columns([3.8, 1.2])
+                with col_pb:
+                    st.markdown(
+                        render_winxp_progress_bar(
+                            percent=100.0,
+                            status="complete",
+                            detail=f"Model '{m_name}' successfully installed and ready for inference.",
+                            is_indeterminate=False
+                        ),
+                        unsafe_allow_html=True
+                    )
+                with col_ack:
+                    st.write("")
+                    st.write("")
+                    if st.button("✔ Dismiss", key=f"ack_dl_btn_{m_name}", type="primary", use_container_width=True):
+                        model_download_manager.dismiss_job(m_name)
+                        get_cached_models.clear()
+                        st.rerun()
+
+            elif st_val == "stopped":
+                col_pb, col_ack = st.columns([3.8, 1.2])
+                with col_pb:
+                    st.markdown(
+                        render_winxp_progress_bar(
+                            percent=pct,
+                            status="stopped",
+                            detail=f"Download stopped by user ({pct:.1f}%).",
+                            is_indeterminate=False
+                        ),
+                        unsafe_allow_html=True
+                    )
+                with col_ack:
+                    st.write("")
+                    st.write("")
+                    if st.button("✕ Dismiss", key=f"dismiss_stopped_{m_name}", use_container_width=True):
+                        model_download_manager.dismiss_job(m_name)
+                        st.rerun()
+
+            elif st_val == "error":
+                st.error(f"❌ Failed to download model '{m_name}': {job.get('error', 'Unknown error')}")
+                if st.button("✕ Dismiss Error", key=f"dismiss_err_{m_name}"):
+                    model_download_manager.dismiss_job(m_name)
+                    st.rerun()
+
+        render_download_progress_monitor()
 
     with col_d2:
         st.markdown("##### 🎨 ComfyUI Diffusion Engine")
@@ -1071,63 +1343,241 @@ def render_diagnostics_section():
         st.markdown(f"**Generated Images:**\n`{settings.generated_images_dir}`")
 
 
-def render_tools_section():
-    st.markdown("#### 🛠️ AI Tools & Execution Sandbox")
-    st.caption("Inspect and execute sandboxed backend tools.")
+def render_image_generation_section():
+    st.markdown("#### 🎨 AI Image Generation Studio")
+    st.caption("Generate high-quality images locally via ComfyUI. 100% private and offline.")
 
-    available_tools = tool_registry.get_all_definitions()
-    tool_names = [t.name for t in available_tools]
+    # Status & Checkpoints
+    checkpoints = comfyui_service.get_local_checkpoints()
+    if not checkpoints:
+        checkpoints = ["DreamShaper_8_pruned.safetensors", "v1-5-pruned-emaonly.safetensors"]
 
-    sel_tool_name = st.selectbox("Select Tool", tool_names, key="settings_tool_inspect_select")
-    tool_obj = next((t for t in available_tools if t.name == sel_tool_name), None)
+    # Main Generator Layout: Left Parameters, Right Live Preview
+    col_input, col_out = st.columns([1.1, 1.0])
 
-    if tool_obj:
-        st.markdown(f"**Description:** {tool_obj.description}")
-        st.markdown(f"**Category:** `{tool_obj.category}`")
+    with col_input:
+        img_prompt = st.text_area(
+            "Prompt",
+            value=st.session_state.get("settings_gen_prompt_val", ""),
+            placeholder="Describe what you want to create and include resolution up to 8K (e.g. 'A futuristic cyberpunk supercar in a neon city, rain reflections, 8K Ultra HD' or '7680x4320 cinematic landscape')...",
+            height=110,
+            key="img_studio_prompt_input",
+            help="Describe the scene and optionally include resolution tokens like 8K, 4K, 2K, 7680x4320, 3840x2160, 1920x1080, 16:9, landscape, portrait."
+        )
 
-        # Dynamic parameter inputs
-        params = {}
-        if tool_obj.parameters and tool_obj.parameters.get("properties"):
-            st.markdown("##### Tool Parameters")
-            for prop_name, prop_data in tool_obj.parameters["properties"].items():
-                default_val = "25 * 4 + 15" if prop_name == "expression" else "README.md" if prop_name == "path" else ""
-                params[prop_name] = st.text_input(f"{prop_name} ({prop_data.get('type', 'string')})", value=default_val, key=f"tool_input_{prop_name}")
+        detected_w, detected_h = parse_resolution_from_prompt(img_prompt or "")
 
-        if st.button("⚡ Test Execute Tool", type="primary", key="exec_tool_test_btn"):
-            status_box = st.empty()
-            status_box.markdown(
-                render_thinking_badge("processing", f"Executing sandboxed tool '{sel_tool_name}'..."),
-                unsafe_allow_html=True
-            )
-            res = run_async(tool_registry.execute_tool(name=sel_tool_name, arguments=params, approved=True))
-            status_box.empty()
-            if res.success:
-                st.success("Tool execution successful!")
-                st.json(res.result)
+        col_r1, col_r2 = st.columns([1.5, 0.9])
+        with col_r1:
+            res_presets = [
+                f"Auto-detect from prompt ({detected_w} × {detected_h})",
+                "8K Ultra HD (7680 × 4320 — 16:9)",
+                "8K Full Square (8192 × 8192 — 1:1)",
+                "8K Portrait (4320 × 7680 — 9:16)",
+                "4K Ultra HD (3840 × 2160 — 16:9)",
+                "4K Square (4096 × 4096 — 1:1)",
+                "4K Portrait (2160 × 3840 — 9:16)",
+                "2K QHD (2560 × 1440 — 16:9)",
+                "2K Square (2048 × 2048 — 1:1)",
+                "Full HD (1920 × 1080 — 16:9)",
+                "HD 720p (1280 × 720 — 16:9)",
+                "Landscape 4:3 (1024 × 768)",
+                "Portrait 3:4 (768 × 1024)",
+                "Square 1:1 (1024 × 1024)",
+                "Fast Standard (512 × 512)"
+            ]
+            chosen_res = st.selectbox("Resolution / Dimensions", res_presets, index=0, key="img_studio_res_select")
+            if "7680 × 4320" in chosen_res:
+                final_w, final_h = 7680, 4320
+            elif "8192 × 8192" in chosen_res:
+                final_w, final_h = 8192, 8192
+            elif "4320 × 7680" in chosen_res:
+                final_w, final_h = 4320, 7680
+            elif "3840 × 2160" in chosen_res:
+                final_w, final_h = 3840, 2160
+            elif "4096 × 4096" in chosen_res:
+                final_w, final_h = 4096, 4096
+            elif "2160 × 3840" in chosen_res:
+                final_w, final_h = 2160, 3840
+            elif "2560 × 1440" in chosen_res:
+                final_w, final_h = 2560, 1440
+            elif "2048 × 2048" in chosen_res:
+                final_w, final_h = 2048, 2048
+            elif "1920 × 1080" in chosen_res:
+                final_w, final_h = 1920, 1080
+            elif "1280 × 720" in chosen_res:
+                final_w, final_h = 1280, 720
+            elif "1024 × 768" in chosen_res:
+                final_w, final_h = 1024, 768
+            elif "768 × 1024" in chosen_res:
+                final_w, final_h = 768, 1024
+            elif "1024 × 1024" in chosen_res:
+                final_w, final_h = 1024, 1024
+            elif "512 × 512" in chosen_res:
+                final_w, final_h = 512, 512
             else:
-                st.error(f"Execution failed: {res.error}")
+                final_w, final_h = detected_w, detected_h
+
+        with col_r2:
+            style_choice = st.selectbox(
+                "Style Preset",
+                ["Photorealistic", "Cinematic", "Cyberpunk", "Digital Art", "Anime / Ghibli", "None"],
+                index=0,
+                key="img_studio_style_select"
+            )
+
+        # Advanced options (collapsible)
+        default_ckpt_idx = 0
+        for i, c in enumerate(checkpoints):
+            if "dreamshaper" in c.lower():
+                default_ckpt_idx = i
+                break
+
+        with st.expander("⚙️ Advanced Parameters (Model, Negative Prompt, Quality)", expanded=False):
+            selected_ckpt = st.selectbox("Model Checkpoint", checkpoints, index=default_ckpt_idx, key="img_studio_ckpt_select")
+            neg_prompt = st.text_input("Negative Prompt", value="blurry, deformed, low quality, artifacts, distorted, out of focus", key="img_studio_neg_input")
+            quality_boost = st.checkbox("✨ Quality Boost Filter", value=True, help="Injects professional render tokens to enhance textures and contrast")
+
+        if "selected_ckpt" not in locals():
+            selected_ckpt = checkpoints[default_ckpt_idx]
+            neg_prompt = "blurry, deformed, low quality, artifacts, distorted, out of focus"
+            quality_boost = True
+
+        res_tag = "8K Ultra HD" if (final_w >= 7680 or final_h >= 7680) else "4K Ultra HD" if (final_w >= 3840 or final_h >= 3840) else "2K QHD" if (final_w >= 2560 or final_h >= 2560) else "Full HD" if (final_w >= 1920 or final_h >= 1920) else "HD" if (final_w >= 1280 or final_h >= 1280) else "Standard"
+
+        st.markdown(
+            f'<div style="font-size: 0.8rem; color: #475569; margin: 4px 0 10px 0; display: flex; align-items: center; gap: 8px;">'
+            f'<span>📐 <b>Target Resolution:</b> <code style="background: #e2e8f0; color: #0f172a; padding: 2px 6px; border-radius: 4px; font-weight: 700;">{final_w} × {final_h}</code></span>'
+            f'<span class="brand-pill pill-indigo" style="font-size: 0.72rem;">{res_tag}</span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+
+        gen_btn = st.button("🎨 Generate Image", type="primary", use_container_width=True, key="img_studio_gen_btn")
+
+    with col_out:
+        st.markdown("##### 🖼️ Generated Render")
+        render_slot = st.empty()
+
+        if gen_btn:
+            if not img_prompt or not img_prompt.strip():
+                st.warning("⚠️ Please enter a prompt describing the image you want to generate.")
+            else:
+                target_prompt = img_prompt.strip()
+                if not comfy_online and comfyui_service.comfy_main.exists():
+                    with st.spinner("Booting local ComfyUI engine..."):
+                        run_async(comfyui_service.start_service())
+                        time.sleep(1.0)
+
+                with st.spinner(f"Generating image ({final_w}×{final_h}) via ComfyUI..."):
+                    req = ImageGenerateRequest(
+                        prompt=target_prompt,
+                        negative_prompt=neg_prompt,
+                        width=final_w,
+                        height=final_h,
+                        steps=15,
+                        cfg_scale=7.0,
+                        checkpoint=selected_ckpt,
+                        sampler_name="dpmpp_2m",
+                        scheduler="karras",
+                        style_preset=style_choice,
+                        enhance_prompt=quality_boost
+                    )
+                    res = run_async(comfyui_service.generate_image(req))
+
+                if res.status in ["success", "completed"]:
+                    st.session_state["latest_generated_image"] = {
+                        "filename": res.image_filename,
+                        "prompt": target_prompt,
+                        "width": final_w,
+                        "height": final_h,
+                        "seed": res.seed
+                    }
+                    st.rerun()
+                else:
+                    render_slot.error(f"❌ Generation failed: {res.error}")
+
+        # Render latest or placeholder
+        latest = st.session_state.get("latest_generated_image")
+        if latest and latest.get("filename"):
+            img_path = settings.generated_images_dir / latest["filename"]
+            if img_path.exists():
+                render_slot.image(
+                    str(img_path),
+                    caption=f"{latest.get('prompt', '')[:50]}... ({latest.get('width', 512)}×{latest.get('height', 512)})",
+                    use_container_width=True
+                )
+                with open(img_path, "rb") as f:
+                    render_slot.download_button(
+                        "💾 Download Image",
+                        data=f.read(),
+                        file_name=latest["filename"],
+                        mime="image/png",
+                        type="primary",
+                        use_container_width=True,
+                        key="btn_dl_latest_render"
+                    )
+            else:
+                render_slot.info("Enter a prompt on the left and click **Generate Image** to start.")
+        else:
+            render_slot.info("Enter a prompt on the left and click **Generate Image** to start.")
+
+    # Recent Images Gallery
+    st.markdown("---")
+    col_gt, col_gsync = st.columns([4, 1])
+    with col_gt:
+        st.markdown("##### 📸 Recent Image Creations")
+    with col_gsync:
+        if st.button("🔄 Refresh Gallery", key="refresh_settings_gallery_btn", use_container_width=True):
+            run_async(comfyui_service.sync_external_outputs())
+            st.rerun()
+
+    try:
+        run_async(comfyui_service.sync_external_outputs())
+        hist_rows = run_async(db.fetchall("SELECT id, prompt, image_filename, created_at FROM image_history WHERE status = 'completed' ORDER BY created_at DESC LIMIT 6"))
+    except Exception:
+        hist_rows = []
+
+    if hist_rows:
+        g_cols = st.columns(3)
+        for i, row in enumerate(hist_rows):
+            fname = row.get("image_filename")
+            if fname:
+                fpath = settings.generated_images_dir / fname
+                if fpath.exists():
+                    with g_cols[i % 3]:
+                        st.image(str(fpath), caption=row.get("prompt", "")[:40] + "...", use_container_width=True)
+                        with open(fpath, "rb") as f:
+                            st.download_button("💾 Save", data=f.read(), file_name=fname, mime="image/png", key=f"dl_sett_hist_{row.get('id')}", use_container_width=True)
+
+
 
 # ---------------------------------------------------------
 # TOP BRAND BANNER
 # ---------------------------------------------------------
-st.markdown(f"""
-<div class="brand-container">
-    <div>
-        <div class="brand-title">
-            <span>⚡ LOCAL AI WORKBENCH</span>
-            <span class="brand-pill pill-success">100% Private</span>
-            <span class="brand-pill pill-indigo">{selected_model}</span>
-        </div>
-        <p style="font-size: 0.8rem; color: #64748b; margin: 0.25rem 0 0 0;">
-            Local-first AI workstation for private reasoning, ComfyUI image creation, coding agents, and memory sync.
-        </p>
-    </div>
-    <div style="display: flex; gap: 0.5rem; align-items: center;">
-        <span class="brand-pill pill-indigo">🧠 {len(active_memories)} Memories Active</span>
-        <span class="brand-pill pill-success">{"🟢 Ready" if ollama_online else "🔴 Offline"}</span>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+active_dl = model_download_manager.get_active_job()
+active_dl_html = f'<span class="brand-pill pill-indigo">⬇️ Downloading {active_dl["model"]} ({active_dl["percent"]:.0f}%)</span>' if active_dl else ""
+
+brand_banner_html = (
+    '<div class="brand-container">'
+    '<div>'
+    '<div class="brand-title">'
+    '<span>⚡ LOCAL AI WORKBENCH</span>'
+    '<span class="brand-pill pill-success">100% Private</span>'
+    f'<span class="brand-pill pill-indigo">{selected_model}</span>'
+    f'{active_dl_html}'
+    '</div>'
+    '<p style="font-size: 0.8rem; color: #64748b; margin: 0.25rem 0 0 0;">'
+    'Local-first AI workstation for private reasoning, ComfyUI image creation, coding agents, and memory sync.'
+    '</p>'
+    '</div>'
+    '<div style="display: flex; gap: 0.5rem; align-items: center;">'
+    f'<span class="brand-pill pill-indigo">🧠 {len(active_memories)} Memories Active</span>'
+    f'<span class="brand-pill pill-success">{"🟢 Ready" if ollama_online else "🔴 Offline"}</span>'
+    '</div>'
+    '</div>'
+)
+st.markdown(brand_banner_html, unsafe_allow_html=True)
 
 # =========================================================
 # TAB 1: ALL-IN-ONE STUDIO / CHAT
@@ -1201,19 +1651,55 @@ if selected_page == "💬 All-in-One Studio":
             help="Upload up to 5 resumes, job descriptions, PDF/Word documents, code files, or images. You can also click the 📎 paperclip directly inside the chat input bar below!"
         )
 
+    # Executive Report Generator & Multi-Format Exporter Drawer
+    with st.expander("📄 Executive Report Generator & Exporter (PDF, Word, Excel, PPT, ZIP)", expanded=False):
+        rep_col_left, rep_col_right = st.columns([2.5, 1.5])
+        with rep_col_left:
+            quick_rep_title = st.text_input(
+                "Report Topic / Title",
+                value="Executive Architecture & Performance Assessment",
+                key="quick_report_title_input"
+            )
+            quick_rep_scope = st.text_area(
+                "Scope & Key Questions (Optional)",
+                placeholder="Include architectural tradeoffs, benchmarks, security considerations, and actionable roadmap...",
+                key="quick_report_scope_input",
+                height=70
+            )
+        with rep_col_right:
+            quick_rep_type = st.selectbox(
+                "Report Template",
+                options=[
+                    "Executive Architecture & Performance",
+                    "Security & Codebase Quality Audit",
+                    "Feature Roadmap & Technical Strategy",
+                    "Comprehensive Research & Deep-Dive"
+                ],
+                key="quick_report_template_select"
+            )
+            st.caption("Auto-synthesizes sections and prepares downloadable PDF, DOCX, XLSX, PPTX, and ZIP files.")
+            if st.button("🚀 Generate & Export Report", key="quick_report_generate_btn", use_container_width=True):
+                full_rep_prompt = f"/report {quick_rep_title}"
+                if quick_rep_scope.strip():
+                    full_rep_prompt += f" -- {quick_rep_scope.strip()}"
+                st.session_state.prompt_input = full_rep_prompt
+                st.rerun()
+
     # Render Conversation History
-    for msg in st.session_state.messages:
+    for idx, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
             if msg.get("images"):
                 cols_hist = st.columns(min(len(msg["images"]), 3))
                 for i, img_data in enumerate(msg["images"]):
                     cols_hist[i % len(cols_hist)].image(img_data, use_container_width=True)
             st.markdown(msg["content"], unsafe_allow_html=True)
+            if msg.get("role") == "assistant" and is_report_content(msg.get("content", "")):
+                render_report_export_toolbar(msg["content"], key_prefix=f"hist_rep_{idx}")
 
     # Chat Input Box (Native paperclip support for uploading up to 5 files)
     default_prompt = st.session_state.pop("prompt_input", "")
     chat_submission = st.chat_input(
-        "Ask anything, attach up to 5 files (PDF, Word, Code, Images), or use /image, /report, /code...",
+        "Ask anything, attach up to 5 files (PDF, Word, Code, Images), or use /image, /report, /code, /pull...",
         accept_file="multiple",
         key="main_chat_input"
     )
@@ -1271,7 +1757,7 @@ if selected_page == "💬 All-in-One Studio":
 
         # Check if conversation needs an automatic descriptive title (like ChatGPT / Gemini)
         if active_title in ["New Chat", "New Conversation"] and not st.session_state.messages:
-            auto_title = prompt_to_use.replace("/image", "").replace("/report", "").replace("/code", "").strip()[:32]
+            auto_title = prompt_to_use.replace("/image", "").replace("/report", "").replace("/code", "").replace("/pull", "").strip()[:32]
             if auto_title:
                 update_conversation_title(st.session_state["active_conv_id"], auto_title)
 
@@ -1369,6 +1855,7 @@ if selected_page == "💬 All-in-One Studio":
                 report_content = f"## 📄 {report_title}\n\n---\n\n{rep_text}"
                 status_box.empty()
                 st.markdown(report_content)
+                render_report_export_toolbar(report_content, default_title=report_title, key_prefix="live_rep")
                 save_chat_message(st.session_state["active_conv_id"], "assistant", report_content)
                 st.session_state.messages.append({"role": "assistant", "content": report_content})
 
@@ -1405,6 +1892,87 @@ if selected_page == "💬 All-in-One Studio":
                 st.markdown(out)
                 save_chat_message(st.session_state["active_conv_id"], "assistant", out)
                 st.session_state.messages.append({"role": "assistant", "content": out})
+
+            # Check for inline /pull or /install command
+            elif prompt_to_use.strip().startswith(("/pull ", "/install ")):
+                pull_target = prompt_to_use.strip().split(maxsplit=1)[1].strip()
+                status_box = st.empty()
+                pull_state = {"status": "downloading", "pct": 0.0}
+                
+                async def chat_pull_stream():
+                    status_box.markdown(
+                        render_winxp_progress_bar(
+                            percent=0.0,
+                            status="downloading",
+                            detail=f"Contacting Ollama registry for '{pull_target}'...",
+                            is_indeterminate=True
+                        ),
+                        unsafe_allow_html=True
+                    )
+                    async for chunk in ollama_service.pull_model(pull_target):
+                        st_val = chunk.get("status", "downloading")
+                        completed = chunk.get("completed", 0)
+                        total = chunk.get("total", 0)
+                        pct = chunk.get("percent")
+
+                        if pct is not None:
+                            pull_state["pct"] = float(pct)
+                            is_ind = False
+                        elif total and completed and total > 0:
+                            pull_state["pct"] = round((completed / total) * 100, 1)
+                            is_ind = False
+                        else:
+                            is_ind = (st_val != "success")
+
+                        detail_str = st_val
+                        if total > 0:
+                            comp_mb = round(completed / (1024 * 1024), 1)
+                            tot_mb = round(total / (1024 * 1024), 1)
+                            detail_str = f"{st_val} ({comp_mb} MB / {tot_mb} MB)"
+
+                        if st_val == "success":
+                            pull_state["status"] = "complete"
+                            pull_state["pct"] = 100.0
+                            status_box.markdown(
+                                render_winxp_progress_bar(
+                                    percent=100.0,
+                                    status="complete",
+                                    detail=f"Model '{pull_target}' successfully installed.",
+                                    is_indeterminate=False
+                                ),
+                                unsafe_allow_html=True
+                            )
+                            break
+                        else:
+                            pull_state["status"] = "downloading"
+                            status_box.markdown(
+                                render_winxp_progress_bar(
+                                    percent=pull_state["pct"],
+                                    status="downloading",
+                                    detail=detail_str,
+                                    is_indeterminate=is_ind
+                                ),
+                                unsafe_allow_html=True
+                            )
+
+                try:
+                    run_async(chat_pull_stream())
+                    final_html = render_winxp_progress_bar(
+                        percent=100.0,
+                        status="complete",
+                        detail=f"Model '{pull_target}' successfully installed into local registry.",
+                        is_indeterminate=False
+                    )
+                    status_box.markdown(final_html, unsafe_allow_html=True)
+                    out_msg = f"### 📦 Model Download\n\n{final_html}\n\nModel `{pull_target}` is now installed and ready for inference."
+                    save_chat_message(st.session_state["active_conv_id"], "assistant", out_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": out_msg})
+                except Exception as e:
+                    status_box.empty()
+                    err_msg = f"❌ Failed to download model `{pull_target}`: {e}"
+                    st.error(err_msg)
+                    save_chat_message(st.session_state["active_conv_id"], "assistant", err_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": err_msg})
 
             # Standard Chat Inference
             else:
@@ -1483,15 +2051,15 @@ if selected_page == "💬 All-in-One Studio":
 # =========================================================
 # TAB: SETTINGS & WORKSPACE CONFIGURATION
 # =========================================================
-elif selected_page == "⚙️ Settings":
-    st.markdown("### ⚙️ Workspace & Engine Settings")
-    st.caption("Configure local model inference parameters, system instructions, AI tool memories, and background engines.")
+elif selected_page in ["⚙️ More", "More", "⚙️ Settings"]:
+    st.markdown("### ⚙️ More — Workspace, Engines & Tools")
+    st.caption("Configure local model inference parameters, system instructions, AI tool memories, background engines, and image generation.")
 
-    tab_inf, tab_mem, tab_diag, tab_tools = st.tabs([
+    tab_inf, tab_mem, tab_diag, tab_img = st.tabs([
         "🤖 Model & Inference",
         "🧠 AI Memory Hub",
         "⚡ Engines & Diagnostics",
-        "🛠️ Tools & Sandbox"
+        "🎨 Image Generation"
     ])
 
     with tab_inf:
@@ -1589,42 +2157,26 @@ elif selected_page == "⚙️ Settings":
             other_adapters = [a for a in adapters if a.lower() not in accel_name.lower() and a.lower() not in accel_details.lower()]
             other_adapters_html = ""
             if other_adapters:
-                other_adapters_html = f"""
-                <div style="font-size: 0.82rem; color: #475569; margin-bottom: 0.45rem;">
-                    <b>Other Adapters:</b> {', '.join(other_adapters)}
-                </div>
-                """
+                other_adapters_html = f'<div style="font-size: 0.82rem; color: #475569; margin-bottom: 0.45rem;"><b>Other Adapters:</b> {", ".join(other_adapters)}</div>'
 
-            st.markdown(f"""
-            <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1.1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
-                <div style="font-weight: 700; font-size: 0.95rem; color: #0f172a; margin-bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between;">
-                    <span>⚡ {accel_name}</span>
-                    <span class="brand-pill pill-primary" style="font-size: 0.72rem; padding: 2px 8px;">{arch}</span>
-                </div>
-                <div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.45rem;">
-                    <b>Platform:</b> {os_name}
-                </div>
-                <div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.45rem;">
-                    <b>Compute Device:</b> {accel_details}
-                </div>
-                {other_adapters_html}
-                <div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.45rem;">
-                    <b>Host RAM:</b> {mem.get('total_gb', 0)} GB Total ({mem.get('available_gb', 0)} GB Available)
-                </div>
-                <div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.45rem;">
-                    <b>Engine Host:</b> <code>http://127.0.0.1:11434</code>
-                </div>
-                <div style="font-size: 0.82rem; color: #0284c7; margin-bottom: 0.45rem;">
-                    <b>Load Balancer:</b> <span class="brand-pill pill-primary" style="font-size: 0.72rem; padding: 2px 7px;">{get_cached_load_profile()['badge']} Active</span> <span style="color: #64748b; font-size: 0.78rem;">({get_cached_load_profile()['optimal_threads']} Cores, Batch {get_cached_load_profile()['prompt_batch_size']})</span>
-                </div>
-                <div style="font-size: 0.82rem; color: #059669; margin-bottom: 0.45rem;">
-                    <b>Safe Flash Attention:</b> <span class="brand-pill pill-success">Active & Protected</span>
-                </div>
-                <div style="font-size: 0.78rem; color: #64748b; line-height: 1.45; margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid #f1f5f9;">
-                    <code>OLLAMA_FLASH_ATTENTION=false</code> prevents hybrid VRAM/RAM split buffer overruns across Windows, macOS, and Linux.
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            lb_prof = get_cached_load_profile()
+            card_html = (
+                f'<div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1.1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">'
+                f'<div style="font-weight: 700; font-size: 0.95rem; color: #0f172a; margin-bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between;">'
+                f'<span>⚡ {accel_name}</span>'
+                f'<span class="brand-pill pill-primary" style="font-size: 0.72rem; padding: 2px 8px;">{arch}</span>'
+                f'</div>'
+                f'<div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.45rem;"><b>Platform:</b> {os_name}</div>'
+                f'<div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.45rem;"><b>Compute Device:</b> {accel_details}</div>'
+                f'{other_adapters_html}'
+                f'<div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.45rem;"><b>Host RAM:</b> {mem.get("total_gb", 0)} GB Total ({mem.get("available_gb", 0)} GB Available)</div>'
+                f'<div style="font-size: 0.82rem; color: #334155; margin-bottom: 0.45rem;"><b>Engine Host:</b> <code>http://127.0.0.1:11434</code></div>'
+                f'<div style="font-size: 0.82rem; color: #0284c7; margin-bottom: 0.45rem;"><b>Load Balancer:</b> <span class="brand-pill pill-primary" style="font-size: 0.72rem; padding: 2px 7px;">{lb_prof["badge"]} Active</span> <span style="color: #64748b; font-size: 0.78rem;">({lb_prof["optimal_threads"]} Cores, Batch {lb_prof["prompt_batch_size"]})</span></div>'
+                f'<div style="font-size: 0.82rem; color: #059669; margin-bottom: 0.45rem;"><b>Safe Flash Attention:</b> <span class="brand-pill pill-success">Active & Protected</span></div>'
+                f'<div style="font-size: 0.78rem; color: #64748b; line-height: 1.45; margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid #f1f5f9;"><code>OLLAMA_FLASH_ATTENTION=false</code> prevents hybrid VRAM/RAM split buffer overruns across Windows, macOS, and Linux.</div>'
+                f'</div>'
+            )
+            st.markdown(card_html, unsafe_allow_html=True)
 
         st.markdown("---")
         st.markdown("##### 📜 Core System Instruction")
@@ -1666,8 +2218,8 @@ elif selected_page == "⚙️ Settings":
     with tab_diag:
         render_diagnostics_section()
 
-    with tab_tools:
-        render_tools_section()
+    with tab_img:
+        render_image_generation_section()
 
 
 # =========================================================
@@ -1989,11 +2541,7 @@ elif selected_page == "👁️ Vision Multimodal":
                 st.error(f"Vision analysis error: {e}")
 
 
-# =========================================================
-# TAB 6: AI TOOLS (DIRECT VIEW FOR DEV MODE)
-# =========================================================
-elif selected_page == "🛠️ AI Tools":
-    render_tools_section()
+
 
 
 # =========================================================

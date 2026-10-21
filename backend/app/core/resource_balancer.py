@@ -18,13 +18,18 @@ from app.core.system_info import get_system_summary, get_memory_info, get_cpu_in
 
 try:
     import psutil
+    # Warm up CPU percent measurement so initial queries return active values
+    try:
+        psutil.cpu_percent(interval=None)
+    except Exception:
+        pass
 except ImportError:
     psutil = None
 
 # Telemetry Cache
 _LAST_TELEMETRY_TIME = 0.0
 _CACHED_TELEMETRY: Optional[Dict[str, Any]] = None
-_TELEMETRY_CACHE_TTL = 2.0  # seconds
+_TELEMETRY_CACHE_TTL = 1.0  # seconds
 
 
 def get_live_telemetry(force_refresh: bool = False) -> Dict[str, Any]:
@@ -293,22 +298,13 @@ def get_balanced_comfyui_args(base_dir: Optional[Any] = None) -> List[str]:
 
 def get_balanced_image_dimensions(target_w: int, target_h: int) -> Tuple[int, int, bool]:
     """
-    Bounds image dimensions so that requests on low-VRAM or CPU hardware do not trigger allocation failures.
+    Bounds image dimensions up to 8K (8192x8192) while ensuring multiples of 8 for VAE compatibility.
     Returns (safe_w, safe_h, was_scaled).
     """
-    profile = get_current_load_profile()
-    max_dim = profile["safe_max_image_dim"]
-
-    w = max(256, min(target_w, 1536))
-    h = max(256, min(target_h, 1536))
-    was_scaled = False
-
-    if w > max_dim or h > max_dim:
-        scale = max_dim / max(w, h)
-        w = int(round(w * scale / 8.0) * 8)
-        h = int(round(h * scale / 8.0) * 8)
-        was_scaled = True
-
+    max_dim = 8192
+    w = max(256, min(target_w, max_dim))
+    h = max(256, min(target_h, max_dim))
+    was_scaled = (w != target_w or h != target_h)
     w = (w // 8) * 8
     h = (h // 8) * 8
     return (w, h, was_scaled)

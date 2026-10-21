@@ -4,8 +4,8 @@ from pydantic import BaseModel, Field
 class ImageGenerateRequest(BaseModel):
     prompt: str
     negative_prompt: Optional[str] = ""
-    width: int = Field(default=512, ge=256, le=2048)
-    height: int = Field(default=512, ge=256, le=2048)
+    width: int = Field(default=512, ge=256, le=8192)
+    height: int = Field(default=512, ge=256, le=8192)
     seed: Optional[int] = -1
     steps: Optional[int] = Field(default=20, ge=1, le=100)
     cfg_scale: Optional[float] = Field(default=7.0, ge=1.0, le=30.0)

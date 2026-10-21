@@ -108,33 +108,67 @@ def parse_resolution_from_prompt(prompt: str, default_width: int = 512, default_
     - Aspect ratios: 16:9, 9:16, 4:3, 3:4, 21:9, 1:1, --ar 16:9
     - Common orientation keywords: landscape, portrait, wallpaper, widescreen, square
     
-    Ensures dimensions are bounded between 256 and 1280 and are multiples of 8 for VAE compatibility.
+    Ensures dimensions are bounded between 256 and 8192 (up to 8K) and are multiples of 8 for VAE compatibility.
     """
     if not prompt:
         return (default_width, default_height)
 
-    # 1. Direct dimensions: 1024x768, 1024 x 768, 1024*768, 1024 by 768
-    dim_match = re.search(r'\b(\d{3,4})\s*(?:[xX*×]|by)\s*(\d{3,4})\b', prompt)
+    p_lower = prompt.lower()
+
+    # 1. Direct dimensions: 7680x4320, 8192x8192, 3840x2160, 1920x1080, 1024x768, 512x512
+    dim_match = re.search(r'\b(\d{3,5})\s*(?:[xX*×]|by)\s*(\d{3,5})\b', prompt)
     if not dim_match:
         # Also check "width: 1024, height: 768" or "w: 1024 h: 768"
-        dim_match = re.search(r'(?:width|w)[:=\s]+(\d{3,4})[,\s]+(?:height|h)[:=\s]+(\d{3,4})', prompt, re.IGNORECASE)
+        dim_match = re.search(r'(?:width|w)[:=\s]+(\d{3,5})[,\s]+(?:height|h)[:=\s]+(\d{3,5})', prompt, re.IGNORECASE)
 
     if dim_match:
         w = int(dim_match.group(1))
         h = int(dim_match.group(2))
         
-        # Scale proportionally if either dimension exceeds 1280 (to prevent CPU OOM)
-        max_dim = 1280
+        # Scale proportionally if either dimension exceeds 8192 (up to 8K)
+        max_dim = 8192
         if w > max_dim or h > max_dim:
             scale = max_dim / max(w, h)
             w = int(w * scale)
             h = int(h * scale)
         
-        w = max(256, min(1280, w))
-        h = max(256, min(1280, h))
+        w = max(256, min(8192, w))
+        h = max(256, min(8192, h))
         w = (w // 8) * 8
         h = (h // 8) * 8
         return (w, h)
+
+    # 2. Resolution Keywords (8K, 4K, 2K, 1080p, 720p)
+    if re.search(r'\b(?:8k(?:\s*uhd)?|8-k|ultra\s*hd\s*8k)\b', p_lower):
+        if any(k in p_lower for k in ["portrait", "vertical", "9:16", "3:4"]):
+            return (4320, 7680)
+        elif "square" in p_lower or "1:1" in p_lower:
+            return (8192, 8192)
+        return (7680, 4320)
+
+    if re.search(r'\b(?:4k(?:\s*uhd)?|4-k|ultra\s*hd\s*4k)\b', p_lower):
+        if any(k in p_lower for k in ["portrait", "vertical", "9:16", "3:4"]):
+            return (2160, 3840)
+        elif "square" in p_lower or "1:1" in p_lower:
+            return (4096, 4096)
+        return (3840, 2160)
+
+    if re.search(r'\b(?:2k|1440p|qhd)\b', p_lower):
+        if any(k in p_lower for k in ["portrait", "vertical", "9:16", "3:4"]):
+            return (1440, 2560)
+        elif "square" in p_lower or "1:1" in p_lower:
+            return (2048, 2048)
+        return (2560, 1440)
+
+    if re.search(r'\b(?:1080p|fhd|full\s*hd)\b', p_lower):
+        if any(k in p_lower for k in ["portrait", "vertical", "9:16", "3:4"]):
+            return (1080, 1920)
+        return (1920, 1080)
+
+    if re.search(r'\b(?:720p|hd\s*720)\b', p_lower):
+        if any(k in p_lower for k in ["portrait", "vertical", "9:16", "3:4"]):
+            return (720, 1280)
+        return (1280, 720)
 
     # 2. Aspect ratios: 16:9, 9:16, 4:3, 3:4, 21:9, 1:1, --ar 16:9
     ar_match = re.search(r'(?:--ar\s+|aspect\s+ratio\s*[:=]?\s*|\b)(\d{1,2})\s*[:/]\s*(\d{1,2})\b', prompt, re.IGNORECASE)
