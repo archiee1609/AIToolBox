@@ -9,6 +9,7 @@ from app.api.coding import router as coding_router
 from app.api.automation import router as automation_router
 from app.api.settings import router as settings_router
 from app.api.reports import router as reports_router
+from app.api.voice import router as voice_router
 
 api_router = APIRouter(prefix="/api")
 
@@ -22,3 +23,4 @@ api_router.include_router(coding_router)
 api_router.include_router(automation_router)
 api_router.include_router(settings_router)
 api_router.include_router(reports_router)
+api_router.include_router(voice_router)

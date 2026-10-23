@@ -271,3 +271,44 @@ export interface ReportGenerateResponse {
   saved_path?: string;
   created_at: string;
 }
+
+
+export interface SystemHardwareSpec {
+  os_name: string;
+  cpu_name: string;
+  cpu_cores: number;
+  ram_total_gb: number;
+  ram_available_gb: number;
+  gpu_vendor: string;
+  gpu_name: string;
+  vram_gb: number;
+  is_unified_memory: boolean;
+  tier: string;
+  tier_badge: string;
+  tier_description: string;
+}
+
+export interface ModelRecommendation {
+  tag: string;
+  name: string;
+  category: string;
+  category_label: string;
+  parameter_size: string;
+  download_size: string;
+  min_ram_gb: number;
+  recommended_ram_gb: number;
+  fit_score: string;
+  fit_badge: string;
+  execution_mode: string;
+  description: string;
+  reason: string;
+  is_installed: boolean;
+  is_primary: boolean;
+}
+
+export interface ModelRecommendationsResponse {
+  system_spec: SystemHardwareSpec;
+  primary_recommendation?: ModelRecommendation;
+  recommendations: ModelRecommendation[];
+  installed_tags: string[];
+}

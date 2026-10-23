@@ -30,3 +30,40 @@ class ModelOptions(BaseModel):
     seed: Optional[int] = None
     num_ctx: Optional[int] = Field(default=8192, ge=512)
     keep_alive: Optional[str] = "5m"
+
+class SystemHardwareSpec(BaseModel):
+    os_name: str
+    cpu_name: str
+    cpu_cores: int
+    ram_total_gb: float
+    ram_available_gb: float
+    gpu_vendor: str
+    gpu_name: str
+    vram_gb: float
+    is_unified_memory: bool
+    tier: str
+    tier_badge: str
+    tier_description: str
+
+class ModelRecommendation(BaseModel):
+    tag: str
+    name: str
+    category: str
+    category_label: str
+    parameter_size: str
+    download_size: str
+    min_ram_gb: float
+    recommended_ram_gb: float
+    fit_score: str
+    fit_badge: str
+    execution_mode: str
+    description: str
+    reason: str
+    is_installed: bool = False
+    is_primary: bool = False
+
+class ModelRecommendationsResponse(BaseModel):
+    system_spec: SystemHardwareSpec
+    primary_recommendation: Optional[ModelRecommendation] = None
+    recommendations: List[ModelRecommendation]
+    installed_tags: List[str]

@@ -330,10 +330,10 @@ class ComfyUIService:
 
         return sys.executable
 
-    async def is_server_reachable(self) -> bool:
+    async def is_server_reachable(self, timeout: float = 2.0) -> bool:
         """Checks if ComfyUI HTTP server responds on the configured port."""
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 res = await client.get(f"{self.base_url}/system_stats")
                 return res.status_code == 200
         except Exception:

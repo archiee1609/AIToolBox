@@ -28,15 +28,17 @@ _CACHED_PROCESSOR_NAME: Optional[str] = None
 _CACHED_DISPLAY_ADAPTERS: Optional[List[str]] = None
 _CACHED_PRIMARY_ACCELERATOR: Optional[Dict[str, Any]] = None
 _CACHED_ALL_HARDWARE: Optional[Dict[str, Any]] = None
+_CACHED_SYSTEM_SUMMARY: Optional[Dict[str, Any]] = None
 
 
 def clear_hardware_cache() -> None:
     """Clears hardware caches to force re-detection."""
-    global _CACHED_PROCESSOR_NAME, _CACHED_DISPLAY_ADAPTERS, _CACHED_PRIMARY_ACCELERATOR, _CACHED_ALL_HARDWARE
+    global _CACHED_PROCESSOR_NAME, _CACHED_DISPLAY_ADAPTERS, _CACHED_PRIMARY_ACCELERATOR, _CACHED_ALL_HARDWARE, _CACHED_SYSTEM_SUMMARY
     _CACHED_PROCESSOR_NAME = None
     _CACHED_DISPLAY_ADAPTERS = None
     _CACHED_PRIMARY_ACCELERATOR = None
     _CACHED_ALL_HARDWARE = None
+    _CACHED_SYSTEM_SUMMARY = None
 
 
 def get_os_friendly_name() -> str:
@@ -300,38 +302,44 @@ def _detect_snapdragon_accelerator() -> Optional[Dict[str, Any]]:
 
 def _detect_nvidia_accelerator() -> Optional[Dict[str, Any]]:
     """Detects any NVIDIA GPU (GeForce RTX/GTX, Quadro, Tesla, A100, H100, Blackwell)."""
-    # 1. PyTorch CUDA check (highest precision)
-    try:
-        import torch
-        # If running on AMD ROCm/HIP or Intel XPU, skip NVIDIA detection
-        if hasattr(torch.version, "hip") and torch.version.hip:
-            return None
-        if hasattr(torch, "xpu") and torch.xpu.is_available() and not torch.cuda.is_available():
-            return None
+    # 1. PyTorch CUDA check if torch is ALREADY loaded in sys.modules (0ms, honors active runtime and mocks)
+    if "torch" in sys.modules:
+        try:
+            torch = sys.modules["torch"]
+            if hasattr(torch, "cuda") and torch.cuda.is_available():
+                if hasattr(torch, "version") and getattr(torch.version, "hip", None):
+                    return None
+                if hasattr(torch, "xpu") and torch.xpu.is_available() and not torch.cuda.is_available():
+                    return None
 
-        if torch.cuda.is_available():
-            dev_name = torch.cuda.get_device_name(0)
-            total_vram = round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 1)
-            return {
-                "vendor": "nvidia",
-                "type": "cuda",
-                "name": f"NVIDIA CUDA ({dev_name})",
-                "device": dev_name,
-                "vram_gb": total_vram,
-                "is_unified_memory": False,
-                "details": f"{dev_name} ({total_vram} GB Dedicated VRAM)"
-            }
-    except Exception:
-        pass
+                dev_name = torch.cuda.get_device_name(0)
+                total_vram = 0.0
+                try:
+                    total_vram = round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 1)
+                except Exception:
+                    pass
+                return {
+                    "vendor": "nvidia",
+                    "type": "cuda",
+                    "name": f"NVIDIA CUDA ({dev_name})",
+                    "device": dev_name,
+                    "vram_gb": total_vram,
+                    "is_unified_memory": False,
+                    "details": f"{dev_name} ({total_vram} GB Dedicated VRAM)"
+                }
+        except Exception:
+            pass
 
-    # 2. nvidia-smi CLI
+    # 2. Fast nvidia-smi CLI check (~100ms, avoids heavy 4s torch import if torch is not compiled with CUDA)
     nvidia_smi = shutil.which("nvidia-smi")
     if nvidia_smi:
         try:
+            creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             output = subprocess.check_output(
                 [nvidia_smi, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
                 text=True,
-                timeout=1,
+                timeout=1.5,
+                creationflags=creationflags,
                 stderr=subprocess.DEVNULL
             ).strip()
             if output:
@@ -553,7 +561,13 @@ def get_all_detected_hardware(force_refresh: bool = False) -> Dict[str, Any]:
 
 
 def get_system_summary(force_refresh: bool = False) -> Dict[str, Any]:
-    """Returns a complete summary dictionary of system, CPU, memory, and accelerator info."""
+    """Returns a complete summary dictionary of system, CPU, memory, and accelerator info (cached)."""
+    global _CACHED_SYSTEM_SUMMARY
+    if _CACHED_SYSTEM_SUMMARY is not None and not force_refresh:
+        # Update dynamic memory metrics while keeping static hardware cached
+        _CACHED_SYSTEM_SUMMARY["memory"] = get_memory_info()
+        return _CACHED_SYSTEM_SUMMARY
+
     os_name = get_os_friendly_name()
     sys_name = platform.system()
     cpu = get_cpu_info()
@@ -561,7 +575,7 @@ def get_system_summary(force_refresh: bool = False) -> Dict[str, Any]:
     accel = get_accelerator_info(force_refresh=force_refresh)
     adapters = _get_system_display_adapters()
 
-    return {
+    summary = {
         "os_platform": sys_name,  # 'Windows', 'Darwin', 'Linux'
         "os_friendly": os_name,
         "architecture": cpu["architecture"],
@@ -574,3 +588,5 @@ def get_system_summary(force_refresh: bool = False) -> Dict[str, Any]:
         "is_mac": sys_name == "Darwin",
         "is_linux": sys_name == "Linux"
     }
+    _CACHED_SYSTEM_SUMMARY = summary
+    return summary

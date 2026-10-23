@@ -18,6 +18,7 @@ import {
   MemoryItem,
   ProjectMemoryItem,
   ModelPullProgress,
+  ModelRecommendationsResponse,
   ReportGenerateRequest,
   ReportGenerateResponse
 } from '../types';
@@ -279,5 +280,27 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
-    }).then(r => handleResponse<ReportGenerateResponse>(r))
+    }).then(r => handleResponse<ReportGenerateResponse>(r)),
+
+  // Voice & Speech-to-Text
+  getVoiceStatus: () =>
+    fetch(`${API_BASE}/voice/status`).then(r => handleResponse<any>(r)),
+
+  transcribeAudio: async (audioBlob: Blob, language: string = 'en-US') => {
+    const formData = new FormData();
+    formData.append('audio_file', audioBlob, 'recording.webm');
+    formData.append('language', language);
+    const res = await fetch(`${API_BASE}/voice/transcribe`, {
+      method: 'POST',
+      body: formData,
+    });
+    return handleResponse<any>(res);
+  },
+
+  transcribeAudioBase64: (audioBase64: string, language: string = 'en-US') =>
+    fetch(`${API_BASE}/voice/transcribe-json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio_base64: audioBase64, language }),
+    }).then(r => handleResponse<any>(r))
 };

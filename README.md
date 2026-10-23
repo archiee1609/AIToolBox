@@ -14,13 +14,14 @@
 3. **🧠 Multi-AI Tool Memory Hub**: Import, manage, and toggle persistent memory snippets from **ChatGPT**, **Claude**, **Cursor**, **GitHub Copilot**, and **Gemini**. Active memories are automatically composed and injected into local Ollama system prompts.
 4. **🎨 Auto-Starting ComfyUI Image Lab**: Native adapter for local ComfyUI. Automatically starts alongside the Ollama server with hardware-adaptive acceleration across all major GPU vendors (NVIDIA CUDA, AMD ROCm, Intel Arc XPU, Apple Silicon Metal MPS, or multi-threaded CPU).
 5. **Hardware Discovery & Diagnostics Engine**: Dynamic hardware scanner discovering host OS, CPU threads, physical cores, system RAM, and GPU accelerator details across **NVIDIA**, **AMD**, **Intel**, **Apple Silicon**, and **Qualcomm Snapdragon** with hybrid memory overflow protection (`OLLAMA_FLASH_ATTENTION=false`).
-6. **LLM Model Installation & Management**: Built-in provision to discover, pull, and install any model from the Ollama library (`llama3.2`, `mistral`, `deepseek-r1`, `qwen2.5-coder`, `phi4`, `gemma4`, etc.) with real-time SSE progress tracking.
+6. **💡 Hardware-Aware LLM Recommendation & Downloader Engine**: Analyzes host CPU cores, RAM headroom, and dedicated/unified GPU VRAM to suggest optimal Ollama models to download across Daily Driver, Coding, Deep Reasoning, Lightweight, and Vision categories with 1-click batch installation and progress tracking.
 7. **Report Generator Engine**: Generates executive summaries, codebase architecture audits, and test compliance reports with 1-click Markdown export and workspace saving.
 8. **General-Purpose AI Chatbot**: Real-time streaming conversation with locally hosted Ollama models, conversation persistence, search, editing, and parameter tuning.
 9. **AI Assistant with Practical Tools**: Sandboxed backend tool execution loop with Calculator, DateTime, File Read/Search, Document Summarizer, JSON Validator, File Creator, Test Runner, and Git status inspection.
 10. **Vision Multimodal Studio**: Image-understanding workspace supporting visual inputs on compatible multimodal models (such as `llama3.2:latest` or `gemma4:12b`).
 11. **Coding Agent**: Workspace inspection, unified diff computation, human-in-the-loop approval workflow, safe file patching, sandboxed test execution (`pytest`), and Git diff tracking.
 12. **Native Streamlit Interface**: Clean, professional, pure light-mode Streamlit dashboard with dedicated tabs for All-in-One Studio, Memory Hub, ComfyUI Image Lab, Coding Agent, Vision, and Tools.
+13. **🎙️ Voice & Audio Chat Studio**: Complete hands-free two-way conversational voice chat running 100% locally. Features an inline mic button in the chat prompt, a dedicated Voice & Audio Chat Studio navigation option, sub-millisecond silence pre-screening, universal PyAV audio resampling, and natural offline Text-to-Speech audio response playback.
 
 ---
 

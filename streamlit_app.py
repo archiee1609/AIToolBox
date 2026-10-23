@@ -10,6 +10,8 @@ import asyncio
 import json
 import uuid
 import datetime
+import time
+import hashlib
 import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -75,6 +77,8 @@ from app.services.tool_registry import tool_registry
 from app.services.coding_agent_service import coding_agent_service
 from app.services.document_service import process_uploaded_files, extract_file_data
 from app.services.model_download_service import model_download_manager, parse_model_names
+from app.services.model_recommendation_service import model_recommendation_service
+from app.services.voice_service import voice_service
 from app.schemas.image import ImageGenerateRequest
 
 @st.cache_data(ttl=30)
@@ -795,29 +799,29 @@ def ensure_background_engines():
 
 ensure_background_engines()
 
-# Check Services
-ollama_online = run_async(ollama_service.is_server_reachable(timeout=2.0))
-if not ollama_online:
-    # Attempt on-demand start if not yet running
-    try:
-        run_async(ollama_service.start_service(timeout_seconds=15))
-        ollama_online = run_async(ollama_service.is_server_reachable(timeout=2.0))
-    except Exception:
-        pass
+# High-Performance Cached Engine Status
+@st.cache_data(ttl=8)
+def get_cached_engine_status():
+    o_online = run_async(ollama_service.is_server_reachable(timeout=1.0))
+    if not o_online:
+        try:
+            run_async(ollama_service.start_service(timeout_seconds=5))
+            o_online = run_async(ollama_service.is_server_reachable(timeout=1.0))
+        except Exception:
+            pass
 
-ollama_health = run_async(ollama_service.check_health(timeout=3.0)) if ollama_online else {"reachable": False}
-models_list = run_async(ollama_service.list_models()) if ollama_online else []
+    o_health = run_async(ollama_service.check_health(timeout=1.5)) if o_online else {"reachable": False}
+    m_list = run_async(ollama_service.list_models()) if o_online else []
+    c_online = run_async(comfyui_service.is_server_reachable(timeout=1.0))
+    return o_online, o_health, m_list, c_online
+
+@st.cache_data(ttl=8)
+def get_cached_models():
+    _, _, m_list, _ = get_cached_engine_status()
+    return m_list
+
+ollama_online, ollama_health, models_list, comfy_online = get_cached_engine_status()
 model_names = [m.name for m in models_list] if models_list else ["gemma4:12b"]
-
-comfy_online = run_async(comfyui_service.is_server_reachable())
-
-# Auto-start ComfyUI if offline
-if not comfy_online and comfyui_service.comfy_main.exists():
-    try:
-        run_async(comfyui_service.start_service())
-        comfy_online = run_async(comfyui_service.is_server_reachable())
-    except Exception:
-        pass
 
 # User Preferences Persistence
 DEFAULT_SYSTEM_INSTRUCTION = "You are Local AI Workbench, an all-in-one expert assistant for coding, reasoning, reports, and data analysis."
@@ -1009,6 +1013,7 @@ with st.sidebar:
     # All features are unified in the All-in-One Studio & Settings. Developer tabs preserved in code.
     ALL_MODULE_PAGES = [
         "💬 All-in-One Studio",
+        "🎙️ Voice & Audio Chat",
         "⚙️ More",
         "🧠 AI Tool Memory Hub",
         "🎨 ComfyUI Image Lab",
@@ -1017,7 +1022,7 @@ with st.sidebar:
         "⚙️ Diagnostics & Models"
     ]
     show_all_modules = st.query_params.get("show_all") in ["1", "true"]
-    nav_options = ALL_MODULE_PAGES if show_all_modules else ["💬 All-in-One Studio", "⚙️ More"]
+    nav_options = ALL_MODULE_PAGES if show_all_modules else ["💬 All-in-One Studio", "🎙️ Voice & Audio Chat", "⚙️ More"]
 
     req_page = st.query_params.get("page")
     page_idx = 0
@@ -1120,10 +1125,10 @@ with st.sidebar:
                 st.rerun()
 
     # Live Auto Load Balancer Telemetry Card (Real-time 2s auto-refresh fragment)
-    @st.fragment(run_every="2s")
+    @st.fragment(run_every="4s")
     def render_sidebar_balancer_widget():
         try:
-            live_tele = get_live_telemetry(force_refresh=True)
+            live_tele = get_live_telemetry(force_refresh=False)
             lb_profile = get_current_load_profile(live_tele)
             lb_tier_badge = lb_profile.get("badge", "⚡ Balanced")
             lb_tier_color = lb_profile.get("color", "#0284c7")
@@ -1279,6 +1284,151 @@ def render_memory_hub_section():
                         st.rerun()
 
 
+@st.cache_data(ttl=20)
+def get_cached_recommendations_data(installed_names_tuple: tuple):
+    return model_recommendation_service.get_recommendations(installed_models=list(installed_names_tuple))
+
+def render_model_recommendations_section(models_list, key_prefix="rec", compact=False):
+    """
+    Renders an interactive, hardware-aware recommendation interface advising users
+    which LLMs to download based on their CPU cores, host RAM, and GPU VRAM capacity.
+    """
+    installed_names = tuple(sorted([m.name for m in models_list]))
+    rec_data = get_cached_recommendations_data(installed_names)
+    spec = rec_data.system_spec
+    primary = rec_data.primary_recommendation
+    recs = rec_data.recommendations
+
+    tier_color = "#059669" if spec.tier == "ULTRA" else ("#0284c7" if spec.tier == "BALANCED" else "#d97706")
+
+    # Header Card
+    st.markdown(
+        f'<div style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); '
+        f'border: 1px solid #cbd5e1; border-radius: 10px; padding: 0.85rem 1rem; margin-top: 0.5rem; margin-bottom: 0.85rem;">'
+        f'<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">'
+        f'<span style="font-weight: 800; font-size: 0.92rem; color: #0f172a; display: flex; align-items: center; gap: 6px;">'
+        f'💡 Hardware-Tuned LLM Advisor'
+        f'</span>'
+        f'<span style="font-size: 0.72rem; font-weight: 700; background: #ffffff; color: {tier_color}; padding: 2px 8px; border-radius: 9999px; border: 1px solid #cbd5e1;">'
+        f'{spec.tier_badge}'
+        f'</span>'
+        f'</div>'
+        f'<div style="font-size: 0.78rem; color: #475569; line-height: 1.4;">'
+        f'<b>Detected Hardware:</b> {spec.cpu_name} ({spec.cpu_cores} threads) • {spec.ram_total_gb:.1f} GB RAM ({spec.ram_available_gb:.1f} GB Free) • '
+        f'<b>{spec.gpu_name}</b> ({spec.vram_gb:.1f} GB VRAM{" Unified" if spec.is_unified_memory else ""})'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+    # 1. Primary Recommendation Hero Box
+    if primary:
+        col_hero1, col_hero2 = st.columns([3.2, 1.8])
+        with col_hero1:
+            hero_html = (
+                f'<div style="background: #ffffff; border: 1.5px solid #10b981; border-radius: 8px; padding: 0.75rem 0.9rem; margin-bottom: 0.6rem;">'
+                f'<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">'
+                f'<span style="font-size: 0.72rem; font-weight: 700; color: #059669; text-transform: uppercase; letter-spacing: 0.04em;">'
+                f'★ #1 Top Recommendation For Your System'
+                f'</span>'
+                f'<span style="font-size: 0.7rem; font-weight: 700; background: #ecfdf5; color: #059669; padding: 1px 6px; border-radius: 4px;">'
+                f'{primary.fit_badge}'
+                f'</span>'
+                f'</div>'
+                f'<div style="display: flex; align-items: baseline; gap: 8px;">'
+                f'<span style="font-size: 1rem; font-weight: 800; color: #0f172a;">{primary.name}</span>'
+                f'<code style="font-size: 0.78rem; background: #f1f5f9; color: #0369a1; padding: 1px 5px; border-radius: 4px;">{primary.tag}</code>'
+                f'</div>'
+                f'<div style="font-size: 0.78rem; color: #334155; margin-top: 3px; line-height: 1.35;">'
+                f'<b>Why it fits:</b> {primary.reason}'
+                f'</div>'
+                f'<div style="font-size: 0.72rem; color: #64748b; margin-top: 5px;">'
+                f'Size: <b>{primary.download_size}</b> • Mode: <b>{primary.execution_mode}</b>'
+                f'</div>'
+                f'</div>'
+            )
+            st.markdown(hero_html, unsafe_allow_html=True)
+        with col_hero2:
+            st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+            if primary.is_installed:
+                st.markdown(
+                    f'<div style="text-align: center; padding: 0.65rem 0.5rem; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; color: #065f46; font-weight: 700; font-size: 0.8rem;">'
+                    f'✅ Already Installed<br><span style="font-size: 0.7rem; font-weight: 400; color: #047857;">Ready to chat</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+            else:
+                if st.button(f"⚡ 1-Click Install Top Pick", key=f"{key_prefix}_hero_dl_{primary.tag}", type="primary", use_container_width=True):
+                    model_download_manager.start_download(primary.tag)
+                    st.success(f"Started downloading '{primary.tag}' in background!")
+                    time.sleep(0.3)
+                    st.rerun()
+
+                if st.button(f"+ Add '{primary.tag}' to Queue", key=f"{key_prefix}_hero_q_{primary.tag}", use_container_width=True):
+                    curr = parse_model_names(st.session_state.get("multi_pull_input", ""))
+                    if primary.tag not in curr:
+                        curr.append(primary.tag)
+                        st.session_state["multi_pull_input"] = ", ".join(curr)
+                    st.rerun()
+
+    # 2. Categorized Recommendations Explorer
+    with st.expander("🔍 Explore Recommended Models by Use-Case", expanded=not compact):
+        cat_tabs = st.tabs([
+            "🏆 Daily Driver",
+            "💻 Coding & Dev",
+            "🧠 Deep Reasoning",
+            "⚡ Fast & Light",
+            "👁️ Vision Multimodal"
+        ])
+
+        categories_map = [
+            ("daily_driver", cat_tabs[0]),
+            ("coding", cat_tabs[1]),
+            ("reasoning", cat_tabs[2]),
+            ("lightweight", cat_tabs[3]),
+            ("vision", cat_tabs[4])
+        ]
+
+        for cat_key, tab_container in categories_map:
+            with tab_container:
+                cat_models = [r for r in recs if r.category == cat_key]
+                if not cat_models:
+                    st.info("No specific models in this category for this profile.")
+                    continue
+
+                for r in cat_models:
+                    c_info, c_action = st.columns([3.3, 1.7])
+                    with c_info:
+                        installed_badge = " <span style='color: #059669; font-size: 0.72rem; font-weight: 700;'>[Installed ✅]</span>" if r.is_installed else ""
+                        st.markdown(
+                            f"**{r.name}** (`{r.tag}`){installed_badge} &nbsp; "
+                            f"<span style='font-size: 0.7rem; background: #e0f2fe; color: #0369a1; padding: 1px 5px; border-radius: 4px; font-weight: 600;'>{r.fit_badge}</span><br>"
+                            f"<span style='font-size: 0.78rem; color: #475569;'>{r.description}</span><br>"
+                            f"<span style='font-size: 0.75rem; color: #0284c7;'><b>Hardware Fit:</b> {r.reason}</span><br>"
+                            f"<span style='font-size: 0.7rem; color: #64748b;'>Download: {r.download_size} • Params: {r.parameter_size} • Mode: {r.execution_mode}</span>",
+                            unsafe_allow_html=True
+                        )
+                    with c_action:
+                        if r.is_installed:
+                            st.button("✅ Installed", key=f"{key_prefix}_inst_{cat_key}_{r.tag}", disabled=True, use_container_width=True)
+                        else:
+                            btn_c1, btn_c2 = st.columns([1.2, 1])
+                            with btn_c1:
+                                if st.button("📥 Download", key=f"{key_prefix}_dl_{cat_key}_{r.tag}", type="primary", use_container_width=True):
+                                    model_download_manager.start_download(r.tag)
+                                    st.success(f"Queued '{r.tag}' for download!")
+                                    time.sleep(0.3)
+                                    st.rerun()
+                            with btn_c2:
+                                if st.button("+ Queue", key=f"{key_prefix}_q_{cat_key}_{r.tag}", use_container_width=True):
+                                    curr = parse_model_names(st.session_state.get("multi_pull_input", ""))
+                                    if r.tag not in curr:
+                                        curr.append(r.tag)
+                                        st.session_state["multi_pull_input"] = ", ".join(curr)
+                                    st.rerun()
+                    st.divider()
+
+
 def render_diagnostics_section():
     st.markdown("#### ⚙️ Diagnostics & Engine Health")
     st.caption("Monitor host platform architecture, hardware acceleration, Ollama server, ComfyUI diffusion, and storage.")
@@ -1316,9 +1466,9 @@ def render_diagnostics_section():
     st.markdown(accel_box_html, unsafe_allow_html=True)
 
     # 2. Real-Time Resource Telemetry & Auto-Balancing Governor
-    @st.fragment(run_every="2s")
+    @st.fragment(run_every="3s")
     def render_live_resource_governor():
-        live_tele = get_live_telemetry(force_refresh=True)
+        live_tele = get_live_telemetry(force_refresh=False)
         lb_prof = get_current_load_profile(live_tele)
         lb_cpu_pct = live_tele.get("cpu", {}).get("percent_used", 0.0)
         lb_mem = live_tele.get("memory", {})
@@ -1415,11 +1565,14 @@ def render_diagnostics_section():
                                 try:
                                     run_async(ollama_service.delete_model(m.name))
                                     st.success(f"Model '{m.name}' removed.")
-                                    get_cached_models.clear()
+                                    get_cached_models.clear(); get_cached_engine_status.clear()
                                     time.sleep(0.3)
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Failed to remove model: {e}")
+
+        # Hardware-Aware Model Advisor
+        render_model_recommendations_section(models_list, key_prefix="diag")
 
         # State tracking for multi-pull input
         if "multi_pull_input" not in st.session_state:
@@ -1486,7 +1639,7 @@ def render_diagnostics_section():
                     if finished_jobs:
                         if st.button("✔ Dismiss All Finished", key="btn_dism_all_finished", type="primary", use_container_width=True):
                             model_download_manager.dismiss_all_finished()
-                            get_cached_models.clear()
+                            get_cached_models.clear(); get_cached_engine_status.clear()
                             st.rerun()
 
             # Render individual progress card for each model
@@ -1546,7 +1699,7 @@ def render_diagnostics_section():
                         st.write("")
                         if st.button("✔ Dismiss", key=f"ack_dl_btn_{m_name}", type="primary", use_container_width=True):
                             model_download_manager.dismiss_job(m_name)
-                            get_cached_models.clear()
+                            get_cached_models.clear(); get_cached_engine_status.clear()
                             st.rerun()
 
                 elif st_val == "stopped":
@@ -1593,6 +1746,22 @@ def render_diagnostics_section():
         if local_checkpoints:
             for ck in local_checkpoints:
                 st.code(f"models/checkpoints/{ck}")
+
+    st.markdown("---")
+    # Voice & Speech Engine Diagnostic Status
+    v_stat = voice_service.get_status()
+    st.markdown("##### 🎙️ Voice & Speech-to-Text Engine")
+    col_v_info1, col_v_info2, col_v_info3 = st.columns(3)
+    with col_v_info1:
+        st.write(f"**Status:** {'🟢 Online & Ready' if v_stat.get('available') else '🔴 Offline'}")
+        st.write(f"**Default Engine:** `{v_stat.get('default_engine', 'google')}`")
+    with col_v_info2:
+        engines_str = ", ".join(v_stat.get("engines", [])) or "None"
+        st.write(f"**Active Engines:** `{engines_str}`")
+        st.write(f"**Microphone Capture:** {'✅ Supported' if v_stat.get('microphone_supported') else '❌ Unsupported'}")
+    with col_v_info3:
+        st.write(f"**Web Speech API:** {'✅ Browser Enabled' if v_stat.get('web_speech_supported') else '❌ Disabled'}")
+        st.caption(v_stat.get("details", ""))
 
     st.markdown("---")
     st.markdown("##### 💾 Storage & Data Persistence")
@@ -1849,6 +2018,79 @@ brand_banner_html = (
 st.markdown(brand_banner_html, unsafe_allow_html=True)
 
 # =========================================================
+
+def render_voice_audio_chat_section():
+    """
+    Dedicated full-featured Voice & Audio Chat Studio.
+    Provides two-way conversational voice chat:
+      - Microphone audio input with automatic speech-to-text.
+      - Streaming Ollama LLM reasoning.
+      - Real-time offline Text-to-Speech audio readout so the assistant talks back.
+    """
+    st.markdown("### 🎙️ Voice & Audio Chat Studio")
+    st.caption("Hands-free, two-way conversational voice chat running 100% locally and privately on your hardware.")
+
+    # Status & Controls Bar
+    v_stat = voice_service.get_status()
+    col_v1, col_v2, col_v3 = st.columns([2.5, 2.5, 1.5])
+    with col_v1:
+        st.markdown(f"**Speech Input:** {'🟢 Online & Ready' if v_stat.get('available') else '🔴 Offline'}")
+        st.caption(f"Engine: {v_stat.get('default_engine', 'google').capitalize()} • Universal 16kHz PCM")
+    with col_v2:
+        st.markdown("**Audio Response:** 🟢 Offline TTS Active")
+        st.caption("Natural voice synthesis for hands-free audio dialogue")
+    with col_v3:
+        auto_speak = st.toggle("🔊 Speak Replies", value=True, key="vac_auto_speak_toggle")
+
+    st.markdown("---")
+
+    # Render Conversation Messages with Audio Readout Options
+    for idx, msg in enumerate(st.session_state.messages):
+        if msg.get("role") == "assistant" and not (msg.get("content") or "").strip():
+            continue
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"], unsafe_allow_html=True)
+            if msg.get("role") == "assistant":
+                col_play1, col_play2 = st.columns([1.5, 5])
+                with col_play1:
+                    if st.button("🔊 Listen / Read Aloud", key=f"vac_read_{idx}", use_container_width=True):
+                        with st.spinner("Generating speech..."):
+                            wav = voice_service.synthesize_speech_wav(msg["content"])
+                            if wav:
+                                st.audio(wav, format="audio/wav", autoplay=True)
+
+    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+    # Prominent Voice Recording Input
+    st.markdown("##### 🎙️ Speak to Chat")
+    st.caption("Click the microphone below to record your voice. Your recording will be transcribed and answered immediately:")
+    
+    col_mic_left, col_mic_right = st.columns([4, 1.2])
+    with col_mic_left:
+        vac_audio = st.audio_input("Record voice prompt", key="vac_main_audio_recorder")
+    with col_mic_right:
+        st.write("")
+        st.write("")
+        vac_lang = st.selectbox("Language", ["en-US", "es-ES", "fr-FR", "de-DE", "hi-IN", "zh-CN", "ja-JP"], index=0, key="vac_lang_select")
+
+    if vac_audio is not None:
+        aud_bytes = vac_audio.getvalue()
+        aud_h = hashlib.sha256(aud_bytes).hexdigest()
+        if st.session_state.get("last_transcribed_hash") != aud_h:
+            with st.spinner("🎙️ Transcribing voice prompt..."):
+                res = run_async(voice_service.transcribe(aud_bytes, language=vac_lang))
+                st.session_state["last_transcribed_hash"] = aud_h
+                if res.get("text"):
+                    st.session_state.prompt_input = res["text"]
+                    st.toast(f"Transcribed: {res['text']}", icon="🎙️")
+                    time.sleep(0.3)
+                    st.rerun()
+                elif res.get("is_silent"):
+                    st.info("Silence detected. Please speak closer to your microphone.")
+                elif res.get("error"):
+                    st.error(f"Voice transcription error: {res['error']}")
+
+
 # TAB 1: ALL-IN-ONE STUDIO / CHAT
 # =========================================================
 if selected_page == "💬 All-in-One Studio":
@@ -1968,6 +2210,66 @@ if selected_page == "💬 All-in-One Studio":
                 render_executive_report_view(msg["content"], default_title=active_title, key_prefix=f"hist_rep_{idx}")
             else:
                 st.markdown(msg["content"], unsafe_allow_html=True)
+
+    # Sleek Chat Action & Voice Bar (Matching Image 2 design)
+    col_act_left, col_act_mid, col_act_mic = st.columns([5.5, 3.8, 1.0])
+    with col_act_left:
+        st.markdown(
+            f'<div style="font-size: 0.8rem; color: #475569; font-weight: 600; padding-top: 6px;">'
+            f'<span>+ 🤖 <b>{selected_model}</b></span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+    with col_act_mid:
+        v_mode_toggle = st.toggle("🎙️ Voice Chat Mode", value=st.session_state.get("voice_chat_mode", False), key="toggle_st_voice_mode", help="Enable two-way voice chat with spoken audio responses")
+        st.session_state["voice_chat_mode"] = v_mode_toggle
+    with col_act_mic:
+        # Sleek Mic Icon Popover (Directly beside the chat input)
+        with st.popover("🎙️", help="Click to speak (Voice Dictation / Audio Input)"):
+            st.markdown("##### 🎙️ Voice Input")
+            st.caption("Record and speak your prompt to chat hands-free:")
+            inline_mic_rec = st.audio_input("Record Prompt", key="inline_mic_popover_audio")
+            if inline_mic_rec is not None:
+                aud_bytes = inline_mic_rec.getvalue()
+                aud_h = hashlib.sha256(aud_bytes).hexdigest()
+                if st.session_state.get("last_transcribed_hash") != aud_h:
+                    with st.spinner("🎙️ Transcribing voice..."):
+                        t_res = run_async(voice_service.transcribe(aud_bytes))
+                        st.session_state["last_transcribed_hash"] = aud_h
+                        if t_res.get("text"):
+                            st.session_state["voice_transcribed_text"] = t_res["text"]
+                            st.toast(f"Transcribed: \"{t_res['text']}\"", icon="🎙️")
+                        elif t_res.get("is_silent"):
+                            st.info("Silence detected. Please speak closer to microphone.")
+                        elif t_res.get("error"):
+                            st.error(f"Error: {t_res['error']}")
+
+            if st.session_state.get("voice_transcribed_text"):
+                col_vp1, col_vp2 = st.columns([3, 1])
+                with col_vp1:
+                    v_edit = st.text_input("Spoken Prompt", value=st.session_state["voice_transcribed_text"], key="v_edit_inp", label_visibility="collapsed")
+                with col_vp2:
+                    if st.button("🚀 Send", key="v_popover_send_btn", type="primary", use_container_width=True):
+                        st.session_state.prompt_input = v_edit or st.session_state["voice_transcribed_text"]
+                        st.session_state["voice_transcribed_text"] = ""
+                        st.rerun()
+
+    # Active Voice Chat Mode Prominent Banner & Direct Audio Recorder
+    if st.session_state.get("voice_chat_mode"):
+        st.info("🎙️ **Voice Chat Mode Active**: Speak your prompt using the audio recorder below. The assistant will answer with text and spoken audio.")
+        v_mode_rec = st.audio_input("🎙️ Record Voice Prompt (Hands-Free Audio Chat)", key="voice_chat_mode_active_recorder")
+        if v_mode_rec is not None:
+            v_bytes = v_mode_rec.getvalue()
+            v_h = hashlib.sha256(v_bytes).hexdigest()
+            if st.session_state.get("last_transcribed_hash") != v_h:
+                with st.spinner("🎙️ Transcribing voice prompt..."):
+                    t_res = run_async(voice_service.transcribe(v_bytes))
+                    st.session_state["last_transcribed_hash"] = v_h
+                    if t_res.get("text"):
+                        st.session_state.prompt_input = t_res["text"]
+                        st.toast(f"Sending voice prompt: \"{t_res['text']}\"", icon="🎙️")
+                        time.sleep(0.2)
+                        st.rerun()
 
     # Chat Input Box (Native paperclip support for uploading up to 5 files)
     default_prompt = st.session_state.pop("prompt_input", "")
@@ -2369,6 +2671,13 @@ if selected_page == "💬 All-in-One Studio":
                     save_chat_message(st.session_state["active_conv_id"], "assistant", full_response)
                     st.session_state.messages.append({"role": "assistant", "content": full_response})
 
+                    # Voice Chat: Synthesize spoken audio reply if voice chat mode is enabled
+                    if st.session_state.get("voice_chat_mode"):
+                        with st.spinner("🔊 Generating spoken audio reply..."):
+                            spoken_wav = voice_service.synthesize_speech_wav(full_response)
+                            if spoken_wav:
+                                st.audio(spoken_wav, format="audio/wav", autoplay=True)
+
                 except Exception as e:
                     err_msg = str(e)
                     if any(term in err_msg for term in ["0xc0000409", "CUDA error", "shared object initialization", "buffer in this application"]):
@@ -2420,6 +2729,10 @@ elif selected_page in ["⚙️ More", "More", "⚙️ Settings"]:
     with tab_inf:
         st.markdown("#### 🤖 Model Inference Parameters")
         st.caption("Configure the active local model, inference temperature, context capacity, and core instructions.")
+
+        # Hardware-Aware LLM Suggestions
+        with st.expander("💡 Hardware-Tuned Model Advisor (Suggested Models for Your PC)", expanded=False):
+            render_model_recommendations_section(models_list, key_prefix="inf", compact=True)
 
         col_inf_left, col_inf_right = st.columns([1.5, 1])
 
@@ -2580,6 +2893,9 @@ elif selected_page in ["⚙️ More", "More", "⚙️ Settings"]:
 # =========================================================
 # TAB 2: AI TOOL MEMORY HUB (DIRECT VIEW FOR DEV MODE)
 # =========================================================
+elif selected_page == "🎙️ Voice & Audio Chat":
+    render_voice_audio_chat_section()
+
 elif selected_page == "🧠 AI Tool Memory Hub":
     render_memory_hub_section()
 

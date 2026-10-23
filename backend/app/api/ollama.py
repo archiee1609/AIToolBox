@@ -4,7 +4,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from app.services.ollama_service import ollama_service
 from app.services.model_download_service import model_download_manager, parse_model_names
-from app.schemas.models import ModelDetails
+from app.services.model_recommendation_service import model_recommendation_service
+from app.schemas.models import ModelDetails, ModelRecommendationsResponse
 
 router = APIRouter(prefix="/ollama", tags=["Ollama Integration"])
 
@@ -16,6 +17,20 @@ async def get_ollama_health():
 async def list_installed_models():
     models = await ollama_service.list_models()
     return models
+
+@router.get("/recommendations", response_model=ModelRecommendationsResponse)
+async def get_model_recommendations_endpoint():
+    """
+    Analyzes host system specifications (CPU cores, RAM headroom, GPU accelerator VRAM,
+    and load tier) to suggest which LLM models to download from the Ollama library.
+    """
+    try:
+        installed = await ollama_service.list_models()
+        installed_names = [m.name for m in installed]
+    except Exception:
+        installed_names = []
+
+    return model_recommendation_service.get_recommendations(installed_models=installed_names)
 
 @router.get("/models/{model_name:path}")
 async def get_model_details(model_name: str):
@@ -64,7 +79,7 @@ async def start_background_download(payload: Dict[str, Any]):
     """Initiates a background model download task managed independently of HTTP streams."""
     model_name = payload.get("name", "").strip()
     if not model_name:
-        raise HTTPException(status_code=400, detail="Missing parameter 'name'.")
+        raise HTTPException(status_code=400, detail="Missing required parameter 'name' (model tag).")
     job = model_download_manager.start_download(model_name)
     return {"status": "started", "job": job.to_dict()}
 
@@ -88,7 +103,7 @@ async def stop_background_download(payload: Dict[str, Any]):
     """Stops or cancels an active background model download."""
     model_name = payload.get("name", "").strip()
     if not model_name:
-        raise HTTPException(status_code=400, detail="Missing parameter 'name'.")
+        raise HTTPException(status_code=400, detail="Missing required parameter 'name' (model tag).")
     stopped = model_download_manager.stop_download(model_name)
     return {"status": "stopped" if stopped else "not_found", "model": model_name}
 
@@ -105,7 +120,9 @@ async def get_background_download_status(name: Optional[str] = None):
         job = model_download_manager.get_job(name)
     else:
         job = model_download_manager.get_active_or_latest_job()
-    return {"job": job}
+    if not job:
+        return {"status": "idle", "job": None}
+    return {"status": job.status, "job": job.to_dict()}
 
 @router.get("/download/jobs")
 async def list_background_download_jobs():

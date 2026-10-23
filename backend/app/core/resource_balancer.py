@@ -29,7 +29,10 @@ except ImportError:
 # Telemetry Cache
 _LAST_TELEMETRY_TIME = 0.0
 _CACHED_TELEMETRY: Optional[Dict[str, Any]] = None
-_TELEMETRY_CACHE_TTL = 1.0  # seconds
+_TELEMETRY_CACHE_TTL = 2.0  # seconds
+_LAST_NVIDIA_SMI_TIME = 0.0
+_CACHED_NVIDIA_METRICS: Optional[Any] = None
+_NVIDIA_SMI_TTL = 3.0  # seconds
 
 
 def get_live_telemetry(force_refresh: bool = False) -> Dict[str, Any]:
@@ -75,41 +78,52 @@ def get_live_telemetry(force_refresh: bool = False) -> Dict[str, Any]:
     temperature_c = 0.0
     power_w = 0.0
 
-    # Query real-time NVIDIA VRAM via nvidia-smi if applicable
+    # Query real-time NVIDIA VRAM via nvidia-smi if applicable (throttled with 3s TTL cache)
     if gpu_vendor == "nvidia":
-        nvidia_smi = shutil.which("nvidia-smi")
-        if nvidia_smi:
-            try:
-                flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-                out = subprocess.check_output(
-                    [
-                        nvidia_smi,
-                        "--query-gpu=memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw",
-                        "--format=csv,noheader,nounits"
-                    ],
-                    text=True,
-                    timeout=2.0,
-                    creationflags=flags,
-                    stderr=subprocess.DEVNULL
-                ).strip()
-                if out:
-                    parts = [float(p.strip()) for p in out.splitlines()[0].split(",")]
-                    if len(parts) >= 3:
-                        total_vram_mb = parts[0]
-                        used_vram_mb = parts[1]
-                        free_vram_mb = parts[2]
-                        gpu_util_pct = parts[3] if len(parts) > 3 else 0.0
-                        mem_util_pct = parts[4] if len(parts) > 4 else 0.0
-                        temperature_c = parts[5] if len(parts) > 5 else 0.0
-                        power_w = parts[6] if len(parts) > 6 else 0.0
+        global _LAST_NVIDIA_SMI_TIME, _CACHED_NVIDIA_METRICS
+        if _CACHED_NVIDIA_METRICS is not None and (now - _LAST_NVIDIA_SMI_TIME) < _NVIDIA_SMI_TTL:
+            total_vram_mb, used_vram_mb, free_vram_mb, gpu_util_pct, mem_util_pct, temperature_c, power_w, total_vram_gb, used_vram_gb, free_vram_gb, vram_percent = _CACHED_NVIDIA_METRICS
+        else:
+            nvidia_smi = shutil.which("nvidia-smi")
+            if nvidia_smi:
+                try:
+                    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                    out = subprocess.check_output(
+                        [
+                            nvidia_smi,
+                            "--query-gpu=memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw",
+                            "--format=csv,noheader,nounits"
+                        ],
+                        text=True,
+                        timeout=1.5,
+                        creationflags=flags,
+                        stderr=subprocess.DEVNULL
+                    ).strip()
+                    if out:
+                        parts = [float(p.strip()) for p in out.splitlines()[0].split(",")]
+                        if len(parts) >= 3:
+                            total_vram_mb = parts[0]
+                            used_vram_mb = parts[1]
+                            free_vram_mb = parts[2]
+                            gpu_util_pct = parts[3] if len(parts) > 3 else 0.0
+                            mem_util_pct = parts[4] if len(parts) > 4 else 0.0
+                            temperature_c = parts[5] if len(parts) > 5 else 0.0
+                            power_w = parts[6] if len(parts) > 6 else 0.0
 
-                        total_vram_gb = round(total_vram_mb / 1024.0, 2)
-                        used_vram_gb = round(used_vram_mb / 1024.0, 2)
-                        free_vram_gb = round(free_vram_mb / 1024.0, 2)
-                        # Compute vram_percent directly from unrounded raw MiB for continuous live precision
-                        vram_percent = round((used_vram_mb / total_vram_mb) * 100.0, 1) if total_vram_mb > 0 else 0.0
-            except Exception:
-                pass
+                            total_vram_gb = round(total_vram_mb / 1024.0, 2)
+                            used_vram_gb = round(used_vram_mb / 1024.0, 2)
+                            free_vram_gb = round(free_vram_mb / 1024.0, 2)
+                            # Compute vram_percent directly from unrounded raw MiB for continuous live precision
+                            vram_percent = round((used_vram_mb / total_vram_mb) * 100.0, 1) if total_vram_mb > 0 else 0.0
+
+                            _CACHED_NVIDIA_METRICS = (
+                                total_vram_mb, used_vram_mb, free_vram_mb, gpu_util_pct,
+                                mem_util_pct, temperature_c, power_w, total_vram_gb,
+                                used_vram_gb, free_vram_gb, vram_percent
+                            )
+                            _LAST_NVIDIA_SMI_TIME = now
+                except Exception:
+                    pass
 
     # For Apple Silicon & Qualcomm Snapdragon, unified memory is shared with system RAM
     elif is_unified or gpu_vendor in ["apple", "qualcomm"]:
@@ -188,8 +202,8 @@ def get_current_load_profile(telemetry: Optional[Dict[str, Any]] = None) -> Dict
     cpu = t.get("cpu", {})
     mem = t.get("memory", {})
 
-    total_vram = accel.get("total_vram_gb", 0.0)
-    free_vram = accel.get("free_vram_gb", 0.0)
+    total_vram = accel.get("total_vram_gb", accel.get("vram_gb", 0.0))
+    free_vram = accel.get("free_vram_gb", accel.get("vram_gb", 0.0))
     total_ram = mem.get("total_gb", 0.0)
     avail_ram = mem.get("available_gb", 0.0)
     logical_cores = cpu.get("logical_cores", 1)

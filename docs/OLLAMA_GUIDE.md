@@ -19,8 +19,15 @@ Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/version"
 
 ---
 
-## 2. Installing Additional LLM Models Directly from the App
-Local AI Workbench includes a built-in **Model Manager** to install and manage models directly without using the terminal:
+## 2. Hardware-Aware Model Advisor & Installation
+Local AI Workbench includes an intelligent **Hardware-Aware Model Advisor** and **Model Downloader** that automatically detects your compute specifications and suggests which models to download:
+
+* **Hardware Rig Profiling**: Analyzes CPU threads, host RAM, GPU vendor (NVIDIA, AMD, Intel, Apple Silicon, Qualcomm), and dedicated/unified VRAM headroom.
+* **Smart Tier Mapping**:
+  - **🚀 Ultra Tier (≥ 16 GB VRAM / Unified ≥ 32 GB)**: Recommends `qwen2.5:14b`, `deepseek-r1:14b`, `qwen2.5-coder:14b` with 100% GPU acceleration.
+  - **⚖️ Balanced Tier (8–15 GB VRAM / 16–31 GB RAM)**: Recommends `qwen2.5:7b`, `mistral:7b`, `qwen2.5-coder:7b`, `deepseek-r1:7b`, `llava:7b`.
+  - **🌱 Eco Tier (< 8 GB VRAM / CPU Execution)**: Recommends `llama3.2:latest`, `qwen2.5:3b`, `phi3.5:latest` for fast inference without UI freezes.
+* **1-Click Download**: 1-click install for the top-recommended model or category-specific models with multi-job parallel tracking.
 
 1. Click the **`+ Install Models`** button in the top header, sidebar, or from within the **All-in-One Studio**.
 2. **1-Click Popular Models**:

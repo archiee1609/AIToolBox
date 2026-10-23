@@ -81,3 +81,17 @@ def test_render_winxp_progress_bar_downloading_and_complete():
     assert "Stopped" in html_stop
     assert "⏹" in html_stop
     assert "62.5%" in html_stop
+
+
+def test_streamlit_voice_audio_chat_page_renders_cleanly():
+    """Headless test verifying the dedicated Voice & Audio Chat Studio renders cleanly."""
+    app_path = Path(__file__).parent.parent.parent / "streamlit_app.py"
+    at = AppTest.from_file(str(app_path.resolve()), default_timeout=30)
+    at.run()
+    assert len(at.exception) == 0
+
+    if len(at.sidebar.radio) > 0:
+        at.sidebar.radio[0].set_value("🎙️ Voice & Audio Chat").run()
+        assert len(at.exception) == 0
+        voice_markdowns = [m.value for m in at.markdown if "Voice & Audio Chat Studio" in m.value or "Speech Input" in m.value]
+        assert len(voice_markdowns) > 0

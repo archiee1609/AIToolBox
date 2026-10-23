@@ -28,7 +28,9 @@ import {
   Layers,
   Wand2,
   ZoomIn,
-  Brain
+  Brain,
+  Mic,
+  MicOff
 } from 'lucide-react';
 import { api } from '../services/api';
 import {
@@ -61,6 +63,90 @@ export const PowerChatPage: React.FC<PowerChatPageProps> = ({
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isListening, setIsListening] = useState(false);
+  const [speechError, setSpeechError] = useState<string | null>(null);
+  const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  const toggleVoiceInput = async () => {
+    if (isListening) {
+      if (recognitionRef.current) recognitionRef.current.stop();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+      setIsListening(false);
+      return;
+    }
+
+    setSpeechError(null);
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      try {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+
+        recognition.onstart = () => setIsListening(true);
+        recognition.onresult = (event: any) => {
+          let interim = '';
+          let final = '';
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) final += event.results[i][0].transcript;
+            else interim += event.results[i][0].transcript;
+          }
+          const spoken = final || interim;
+          if (spoken) {
+            setInputText(prev => (prev.trim() ? prev.trim() + ' ' : '') + spoken.trim());
+          }
+        };
+        recognition.onerror = (event: any) => {
+          setIsListening(false);
+          if (event.error !== 'no-speech') setSpeechError(`Voice error: ${event.error}`);
+        };
+        recognition.onend = () => setIsListening(false);
+        recognitionRef.current = recognition;
+        recognition.start();
+        return;
+      } catch (err: any) {
+        console.warn('SpeechRecognition failed, falling back to MediaRecorder:', err);
+      }
+    }
+
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mediaRecorder = new MediaRecorder(stream);
+        audioChunksRef.current = [];
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) audioChunksRef.current.push(e.data);
+        };
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          stream.getTracks().forEach(t => t.stop());
+          try {
+            const res = await api.transcribeAudio(blob);
+            if (res.text) {
+              setInputText(prev => (prev.trim() ? prev.trim() + ' ' : '') + res.text);
+            } else if (res.is_silent) {
+              setSpeechError('No speech detected in audio.');
+            }
+          } catch (e: any) {
+            setSpeechError('Failed to transcribe audio.');
+          }
+        };
+        mediaRecorder.start();
+        mediaRecorderRef.current = mediaRecorder;
+        setIsListening(true);
+      } catch (err: any) {
+        setSpeechError('Microphone access denied or unavailable.');
+        setIsListening(false);
+      }
+    } else {
+      setSpeechError('Microphone not supported in this browser.');
+    }
+  };
   const [isSearching, setIsSearching] = useState(false);
 
   // Composer State
@@ -1070,6 +1156,20 @@ export const PowerChatPage: React.FC<PowerChatPageProps> = ({
               </div>
             )}
 
+            {/* Voice Listening Banner */}
+            {isListening && (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl mb-1.5 animate-pulse">
+                <span className="w-2 h-2 rounded-full bg-rose-500 inline-block animate-ping" />
+                <span className="font-medium">🎙️ Listening... Speak your prompt now (click microphone to finish)</span>
+              </div>
+            )}
+            {speechError && (
+              <div className="flex items-center justify-between px-3 py-1 bg-amber-50 border border-amber-200 text-amber-700 text-xs rounded-xl mb-1.5">
+                <span>⚠️ {speechError}</span>
+                <button onClick={() => setSpeechError(null)} className="text-amber-500 hover:text-amber-800"><X size={12} /></button>
+              </div>
+            )}
+
             {/* Main Floating Input Box */}
             <div className="bg-white border border-slate-200 rounded-2xl shadow-floating p-3 flex flex-col gap-2 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100 transition-all">
               <textarea
@@ -1103,6 +1203,7 @@ export const PowerChatPage: React.FC<PowerChatPageProps> = ({
                   >
                     <Paperclip size={15} />
                   </button>
+
                   <input
                     type="file"
                     ref={fileInputRef}
@@ -1148,6 +1249,21 @@ export const PowerChatPage: React.FC<PowerChatPageProps> = ({
 
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-slate-400 hidden sm:inline font-mono">Shift+Enter for newline</span>
+
+                  {/* Sleek Microphone Icon beside Send Button (Matching Image 2) */}
+                  <button
+                    type="button"
+                    onClick={toggleVoiceInput}
+                    title={isListening ? "Listening... Click to stop" : "Speak prompt (Voice Dictation)"}
+                    className={`w-7 h-7 rounded-full flex items-center justify-center transition-all ${
+                      isListening
+                        ? 'bg-rose-100 text-rose-600 animate-pulse ring-2 ring-rose-400'
+                        : 'text-slate-400 hover:text-indigo-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {isListening ? <MicOff size={15} className="text-rose-600" /> : <Mic size={15} />}
+                  </button>
+
                   {isGenerating ? (
                     <button
                       onClick={handleStopGeneration}

@@ -15,7 +15,9 @@ import {
   AlertTriangle,
   Sparkles,
   RefreshCw,
-  X
+  X,
+  Mic,
+  MicOff
 } from 'lucide-react';
 import { api } from '../services/api';
 import { Conversation, Message, ModelDetails } from '../types';
@@ -33,6 +35,117 @@ export const ChatPage: React.FC<ChatPageProps> = ({ selectedModel, models, ollam
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isListening, setIsListening] = useState(false);
+  const [speechError, setSpeechError] = useState<string | null>(null);
+  const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  const toggleVoiceInput = async () => {
+    if (isListening) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+      setIsListening(false);
+      return;
+    }
+
+    setSpeechError(null);
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      try {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+
+        recognition.onstart = () => {
+          setIsListening(true);
+        };
+
+        recognition.onresult = (event: any) => {
+          let interim = '';
+          let final = '';
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+              final += event.results[i][0].transcript;
+            } else {
+              interim += event.results[i][0].transcript;
+            }
+          }
+          const spoken = final || interim;
+          if (spoken) {
+            setInputText(prev => {
+              const prefix = prev.trim() ? prev.trim() + ' ' : '';
+              return prefix + spoken.trim();
+            });
+          }
+        };
+
+        recognition.onerror = (event: any) => {
+          setIsListening(false);
+          if (event.error !== 'no-speech') {
+            setSpeechError(`Voice input error: ${event.error}`);
+          }
+        };
+
+        recognition.onend = () => {
+          setIsListening(false);
+        };
+
+        recognitionRef.current = recognition;
+        recognition.start();
+        return;
+      } catch (err: any) {
+        console.warn('SpeechRecognition failed, falling back to MediaRecorder:', err);
+      }
+    }
+
+    // MediaRecorder fallback to backend STT
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mediaRecorder = new MediaRecorder(stream);
+        audioChunksRef.current = [];
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+
+        mediaRecorder.onstop = async () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          stream.getTracks().forEach(track => track.stop());
+          try {
+            const res = await api.transcribeAudio(audioBlob);
+            if (res.text) {
+              setInputText(prev => {
+                const prefix = prev.trim() ? prev.trim() + ' ' : '';
+                return prefix + res.text;
+              });
+            } else if (res.is_silent) {
+              setSpeechError('No speech detected in audio.');
+            }
+          } catch (e: any) {
+            setSpeechError('Failed to transcribe audio on backend.');
+          }
+        };
+
+        mediaRecorder.start();
+        mediaRecorderRef.current = mediaRecorder;
+        setIsListening(true);
+      } catch (err: any) {
+        setSpeechError('Microphone access denied or unavailable.');
+        setIsListening(false);
+      }
+    } else {
+      setSpeechError('Microphone not supported in this browser.');
+    }
+  };
   const [isGenerating, setIsGenerating] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [toolStatus, setToolStatus] = useState<string | null>(null);
@@ -570,6 +683,20 @@ export const ChatPage: React.FC<ChatPageProps> = ({ selectedModel, models, ollam
               </div>
             )}
 
+            {/* Voice Listening Banner */}
+            {isListening && (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl mb-1.5 animate-pulse">
+                <span className="w-2 h-2 rounded-full bg-rose-500 inline-block animate-ping" />
+                <span className="font-medium">🎙️ Listening... Speak your prompt now (click mic or stop to finish)</span>
+              </div>
+            )}
+            {speechError && (
+              <div className="flex items-center justify-between px-3 py-1 bg-amber-50 border border-amber-200 text-amber-700 text-xs rounded-xl mb-1.5">
+                <span>⚠️ {speechError}</span>
+                <button onClick={() => setSpeechError(null)} className="text-amber-500 hover:text-amber-800"><X size={12} /></button>
+              </div>
+            )}
+
             {/* Prompt Input Box */}
             <div className="flex items-end gap-2 px-1">
               <input
@@ -587,6 +714,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ selectedModel, models, ollam
                 <Paperclip size={16} />
               </button>
 
+
               <textarea
                 value={inputText}
                 onChange={e => setInputText(e.target.value)}
@@ -601,6 +729,20 @@ export const ChatPage: React.FC<ChatPageProps> = ({ selectedModel, models, ollam
                 rows={Math.min(5, Math.max(1, inputText.split('\n').length))}
                 className="flex-1 bg-transparent border-0 outline-none text-xs text-main resize-none p-1.5 leading-relaxed font-sans placeholder-dim"
               />
+
+              {/* Sleek Microphone Icon beside Send Button (Matching Image 2) */}
+              <button
+                type="button"
+                onClick={toggleVoiceInput}
+                className={`w-8 h-8 rounded-full flex items-center justify-center transition-all self-center ${
+                  isListening
+                    ? 'bg-rose-100 text-rose-600 animate-pulse ring-2 ring-rose-400'
+                    : 'text-slate-400 hover:text-indigo-600 hover:bg-slate-100'
+                }`}
+                title={isListening ? "Listening... Click to stop recording" : "Speak prompt (Voice Dictation)"}
+              >
+                {isListening ? <MicOff size={16} className="text-rose-600" /> : <Mic size={16} />}
+              </button>
 
               {isGenerating ? (
                 <button
