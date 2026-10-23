@@ -40,6 +40,33 @@ def test_extract_text_and_code():
     assert "def test_app" in res["text"]
 
 
+def test_extract_html_diagnostic():
+    html_sample = b"""
+    <html>
+      <head>
+        <title>WLAN Diagnostic Report</title>
+        <style>body { font-family: sans-serif; } table { border: 1px solid black; }</style>
+        <script>console.log("drop me");</script>
+      </head>
+      <body>
+        <h1>Wlan Report</h1>
+        <p>Disconnect reason: Network dropped by gateway timeout.</p>
+        <table>
+          <tr><th>Adapter</th><th>Driver</th><th>Status</th></tr>
+          <tr><td>Intel Wi-Fi 6 AX203</td><td>23.160.0.4</td><td>Active</td></tr>
+        </table>
+      </body>
+    </html>
+    """
+    res = extract_file_data("wlan_report.html", html_sample)
+    assert res["type"] == "document"
+    assert "Wlan Report" in res["text"]
+    assert "Disconnect reason: Network dropped by gateway timeout." in res["text"]
+    assert "Intel Wi-Fi 6 AX203" in res["text"]
+    assert "drop me" not in res["text"]
+    assert "font-family: sans-serif" not in res["text"]
+
+
 def test_process_multiple_files_and_cap():
     class MockFile:
         def __init__(self, name, content):

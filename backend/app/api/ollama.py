@@ -3,7 +3,7 @@ from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from app.services.ollama_service import ollama_service
-from app.services.model_download_service import model_download_manager
+from app.services.model_download_service import model_download_manager, parse_model_names
 from app.schemas.models import ModelDetails
 
 router = APIRouter(prefix="/ollama", tags=["Ollama Integration"])
@@ -68,6 +68,21 @@ async def start_background_download(payload: Dict[str, Any]):
     job = model_download_manager.start_download(model_name)
     return {"status": "started", "job": job.to_dict()}
 
+@router.post("/download/start-multiple")
+async def start_multiple_downloads_endpoint(payload: Dict[str, Any]):
+    """Initiates background model downloads for multiple models concurrently."""
+    raw_models = payload.get("models") or payload.get("names")
+    if isinstance(raw_models, str):
+        names = parse_model_names(raw_models)
+    elif isinstance(raw_models, list):
+        names = [str(m).strip() for m in raw_models if str(m).strip()]
+    else:
+        raise HTTPException(status_code=400, detail="Missing or invalid 'models' parameter (list or comma-separated string required).")
+    if not names:
+        raise HTTPException(status_code=400, detail="No valid model names provided.")
+    jobs = model_download_manager.start_multiple_downloads(names)
+    return {"status": "started", "count": len(jobs), "jobs": [j.to_dict() for j in jobs]}
+
 @router.post("/download/stop")
 async def stop_background_download(payload: Dict[str, Any]):
     """Stops or cancels an active background model download."""
@@ -76,6 +91,12 @@ async def stop_background_download(payload: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="Missing parameter 'name'.")
     stopped = model_download_manager.stop_download(model_name)
     return {"status": "stopped" if stopped else "not_found", "model": model_name}
+
+@router.post("/download/stop-all")
+async def stop_all_downloads_endpoint():
+    """Stops all active background model downloads."""
+    count = model_download_manager.stop_all_downloads()
+    return {"status": "stopped", "count": count}
 
 @router.get("/download/status")
 async def get_background_download_status(name: Optional[str] = None):
@@ -96,6 +117,12 @@ async def dismiss_background_download_job(name: Optional[str] = None):
     """Dismisses / clears a finished or stopped download job record."""
     model_download_manager.dismiss_job(name)
     return {"status": "dismissed", "model": name or "all"}
+
+@router.delete("/download/jobs/finished")
+async def dismiss_all_finished_download_jobs():
+    """Dismisses all completed, stopped, or error download jobs."""
+    model_download_manager.dismiss_all_finished()
+    return {"status": "dismissed_finished"}
 
 @router.post("/test")
 async def test_model_inference(payload: Dict[str, Any]):

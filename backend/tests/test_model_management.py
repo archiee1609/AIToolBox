@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.services.model_download_service import ModelDownloadManager, DownloadJob
+from app.services.model_download_service import ModelDownloadManager, DownloadJob, parse_model_names
 from app.services.ollama_service import ollama_service
 from app.core.resource_balancer import get_live_telemetry, get_current_load_profile
 from app.core.ui_components import render_winxp_progress_bar
@@ -143,6 +143,82 @@ def test_api_delete_model_endpoint(client):
         res = client.delete("/api/ollama/models/mock:7b")
         assert res.status_code == 200
         assert res.json()["status"] == "success"
+
+
+def test_parse_model_names():
+    # Comma separated
+    res = parse_model_names("qwen2.5:14b, llama3.2:latest, mistral:7b")
+    assert res == ["qwen2.5:14b", "llama3.2:latest", "mistral:7b"]
+
+    # Newlines and semicolons with extra whitespace
+    res2 = parse_model_names("  qwen3.8:27b ;\n  phi4:14b \r\n gemma2:9b  ")
+    assert res2 == ["qwen3.8:27b", "phi4:14b", "gemma2:9b"]
+
+    # Deduplication and spaces
+    res3 = parse_model_names("llama3.2:latest, llama3.2:latest, qwen2.5:14b")
+    assert res3 == ["llama3.2:latest", "qwen2.5:14b"]
+
+    # Empty
+    assert parse_model_names("") == []
+    assert parse_model_names("   ") == []
+
+
+def test_model_download_manager_multiple_downloads():
+    mgr = ModelDownloadManager()
+    mgr.dismiss_job()
+
+    with patch.object(mgr, "_run_download_stream"):
+        jobs = mgr.start_multiple_downloads(["model-a:1b", "model-b:2b", "model-c:3b"])
+        assert len(jobs) == 3
+        assert [j.model_name for j in jobs] == ["model-a:1b", "model-b:2b", "model-c:3b"]
+
+        active = mgr.get_active_jobs()
+        assert len(active) == 3
+
+        all_recent = mgr.get_all_active_or_recent_jobs()
+        assert len(all_recent) == 3
+
+        # Stop one
+        mgr.stop_download("model-b:2b")
+        active = mgr.get_active_jobs()
+        assert len(active) == 2
+
+        # Stop all remaining
+        stopped_count = mgr.stop_all_downloads()
+        assert stopped_count == 2
+        assert len(mgr.get_active_jobs()) == 0
+
+        # Dismiss all finished
+        mgr.dismiss_all_finished()
+        assert len(mgr.list_jobs()) == 0
+
+
+def test_api_multiple_download_endpoints(client):
+    # Start multiple downloads
+    with patch("app.api.ollama.model_download_manager.start_multiple_downloads") as mock_starts:
+        job1 = DownloadJob("model-1:7b")
+        job2 = DownloadJob("model-2:14b")
+        mock_starts.return_value = [job1, job2]
+
+        res = client.post("/api/ollama/download/start-multiple", json={"models": ["model-1:7b", "model-2:14b"]})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "started"
+        assert data["count"] == 2
+        assert len(data["jobs"]) == 2
+
+    # Stop all downloads
+    with patch("app.api.ollama.model_download_manager.stop_all_downloads", return_value=2):
+        res = client.post("/api/ollama/download/stop-all")
+        assert res.status_code == 200
+        assert res.json()["status"] == "stopped"
+        assert res.json()["count"] == 2
+
+    # Dismiss all finished
+    with patch("app.api.ollama.model_download_manager.dismiss_all_finished"):
+        res = client.delete("/api/ollama/download/jobs/finished")
+        assert res.status_code == 200
+        assert res.json()["status"] == "dismissed_finished"
 
 
 def test_realtime_telemetry_force_refresh():

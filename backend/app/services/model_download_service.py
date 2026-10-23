@@ -8,12 +8,42 @@ import threading
 import time
 import json
 import logging
+import re
 from typing import Dict, Any, Optional, List
 import httpx
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def parse_model_names(raw_input: str) -> List[str]:
+    """
+    Parses a string containing one or multiple model names separated by
+    commas, semicolons, newlines, or whitespace.
+    Deduplicates and preserves entry order.
+    Examples:
+      'qwen2.5:14b, llama3.2' -> ['qwen2.5:14b', 'llama3.2']
+      'qwen3.8:27b\\nmistral:7b' -> ['qwen3.8:27b', 'mistral:7b']
+      'gemma2:9b  phi4:14b' -> ['gemma2:9b', 'phi4:14b']
+    """
+    if not raw_input or not raw_input.strip():
+        return []
+
+    # First split by commas, semicolons, or newlines
+    raw_tokens = re.split(r"[,;\n\r]+", raw_input)
+    results: List[str] = []
+    seen = set()
+
+    for token in raw_tokens:
+        sub_tokens = token.strip().split()
+        for st in sub_tokens:
+            cleaned = st.strip().strip("'\"`")
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                results.append(cleaned)
+
+    return results
 
 
 class DownloadJob:
@@ -86,6 +116,16 @@ class ModelDownloadManager:
             t.start()
             return job
 
+    def start_multiple_downloads(self, model_names: List[str], base_url: Optional[str] = None) -> List[DownloadJob]:
+        """Starts background download jobs for multiple models concurrently."""
+        jobs: List[DownloadJob] = []
+        for name in model_names:
+            clean_name = name.strip()
+            if clean_name:
+                job = self.start_download(clean_name, base_url=base_url)
+                jobs.append(job)
+        return jobs
+
     def stop_download(self, model_name: str) -> bool:
         """Signals an active download to stop and aborts the connection."""
         name = model_name.strip()
@@ -98,6 +138,19 @@ class ModelDownloadManager:
                 job.finished_at = time.time()
                 return True
             return False
+
+    def stop_all_downloads(self) -> int:
+        """Stops all currently running downloads and returns count of stopped jobs."""
+        stopped_count = 0
+        with self._job_lock:
+            for job in self._jobs.values():
+                if job.status == "downloading":
+                    job.stop_requested = True
+                    job.status = "stopped"
+                    job.detail = f"Download of '{job.model_name}' stopped by user."
+                    job.finished_at = time.time()
+                    stopped_count += 1
+        return stopped_count
 
     def get_job(self, model_name: str) -> Optional[Dict[str, Any]]:
         """Returns the dictionary representation of a specific download job."""
@@ -112,6 +165,27 @@ class ModelDownloadManager:
                 if job.status == "downloading":
                     return job.to_dict()
             return None
+
+    def get_active_jobs(self) -> List[Dict[str, Any]]:
+        """Returns all currently active downloading jobs."""
+        with self._job_lock:
+            return [
+                j.to_dict() for j in self._jobs.values()
+                if j.status == "downloading"
+            ]
+
+    def get_all_active_or_recent_jobs(self) -> List[Dict[str, Any]]:
+        """
+        Returns all active jobs plus any recently finished/stopped/error jobs,
+        sorted so active downloads appear first, followed by newest completed/stopped jobs.
+        """
+        with self._job_lock:
+            all_jobs = list(self._jobs.values())
+            sorted_jobs = sorted(
+                all_jobs,
+                key=lambda j: (0 if j.status == "downloading" else 1, -j.started_at)
+            )
+            return [j.to_dict() for j in sorted_jobs]
 
     def get_active_or_latest_job(self) -> Optional[Dict[str, Any]]:
         """Returns active downloading job if present; otherwise the most recent finished job."""
@@ -136,6 +210,16 @@ class ModelDownloadManager:
                 self._jobs.pop(model_name.strip(), None)
             else:
                 self._jobs.clear()
+
+    def dismiss_all_finished(self):
+        """Dismisses all completed, stopped, or error jobs, leaving active ones."""
+        with self._job_lock:
+            finished_keys = [
+                k for k, j in self._jobs.items()
+                if j.status in ["complete", "stopped", "error"]
+            ]
+            for k in finished_keys:
+                self._jobs.pop(k, None)
 
     def _run_download_stream(self, job: DownloadJob, base_url: str):
         endpoint = f"{base_url.rstrip('/')}/api/pull"

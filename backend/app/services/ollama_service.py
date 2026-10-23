@@ -341,26 +341,86 @@ class OllamaService:
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:
-                if response.status_code != 200:
-                    err_body = await response.aread()
-                    raise RuntimeError(f"Ollama stream error HTTP {response.status_code}: {err_body.decode('utf-8', errors='replace')}")
+                if response.status_code == 200:
+                    buffer = ""
+                    async for chunk in response.aiter_text():
+                        buffer += chunk
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
+                            if line:
+                                try:
+                                    yield json.loads(line)
+                                except json.JSONDecodeError:
+                                    pass
+                    if buffer.strip():
+                        try:
+                            yield json.loads(buffer.strip())
+                        except json.JSONDecodeError:
+                            pass
+                    return
 
-                buffer = ""
-                async for chunk in response.aiter_text():
-                    buffer += chunk
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        line = line.strip()
-                        if line:
+                err_body = await response.aread()
+                err_text = err_body.decode("utf-8", errors="replace")
+
+            # Fallback retry for transient CUDA / buffer overrun in streaming
+            if "llama-server" in err_text or "0xc0000409" in err_text or "CUDA" in err_text or "buffer" in err_text:
+                logger.warning(f"Ollama streaming server crash: {err_text}. Retrying with safe fallback options...")
+                await asyncio.sleep(2.0)
+                fallback_opts = dict(payload.get("options") or {})
+                fallback_opts["num_ctx"] = min(fallback_opts.get("num_ctx", 4096), 4096)
+                fallback_opts["num_thread"] = 4
+                fallback_opts["num_batch"] = min(fallback_opts.get("num_batch", 256), 256)
+                payload["options"] = fallback_opts
+
+                async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response2:
+                    if response2.status_code == 200:
+                        buffer = ""
+                        async for chunk in response2.aiter_text():
+                            buffer += chunk
+                            while "\n" in buffer:
+                                line, buffer = buffer.split("\n", 1)
+                                line = line.strip()
+                                if line:
+                                    try:
+                                        yield json.loads(line)
+                                    except json.JSONDecodeError:
+                                        pass
+                        if buffer.strip():
                             try:
-                                yield json.loads(line)
+                                yield json.loads(buffer.strip())
                             except json.JSONDecodeError:
                                 pass
-                if buffer.strip():
-                    try:
-                        yield json.loads(buffer.strip())
-                    except json.JSONDecodeError:
-                        pass
+                        return
+                    err_body2 = await response2.aread()
+                    err_text2 = err_body2.decode("utf-8", errors="replace")
+                    if "CUDA" in err_text2 or "0xc0000409" in err_text2 or "llama-server" in err_text2:
+                        await asyncio.sleep(2.0)
+                        fallback_opts["num_gpu"] = 0
+                        payload["options"] = fallback_opts
+                        async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response3:
+                            if response3.status_code == 200:
+                                buffer = ""
+                                async for chunk in response3.aiter_text():
+                                    buffer += chunk
+                                    while "\n" in buffer:
+                                        line, buffer = buffer.split("\n", 1)
+                                        line = line.strip()
+                                        if line:
+                                            try:
+                                                yield json.loads(line)
+                                            except json.JSONDecodeError:
+                                                pass
+                                if buffer.strip():
+                                    try:
+                                        yield json.loads(buffer.strip())
+                                    except json.JSONDecodeError:
+                                        pass
+                                return
+                            err_body3 = await response3.aread()
+                            err_text = err_body3.decode("utf-8", errors="replace")
+
+            raise RuntimeError(f"Ollama stream error HTTP {response.status_code}: {err_text}")
 
     async def chat_stream(
         self,
@@ -381,11 +441,68 @@ class OllamaService:
         if options:
             balanced_opts.update(options)
 
+        thinking_buffer: List[str] = []
+        has_yielded_content = False
+
         async for chunk in self.stream_chat(model=model, messages=messages, options=balanced_opts, tools=tools, timeout=timeout):
             msg = chunk.get("message", {})
             token = msg.get("content", "")
+            thinking_token = msg.get("thinking", "")
+            if thinking_token:
+                thinking_buffer.append(thinking_token)
             if token:
+                has_yielded_content = True
                 yield token
+
+        # If model exhausted context or completed only in thinking mode without content,
+        # fallback to yielding synthesized thinking output so the user NEVER receives a blank response!
+        if not has_yielded_content and thinking_buffer:
+            thought_text = "".join(thinking_buffer).strip()
+            if thought_text:
+                yield f"**Analysis & Findings (from Reasoning Engine):**\n\n{thought_text}"
+
+    async def chat_stream_detailed(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        context_length: int = 8192,
+        options: Optional[Dict[str, Any]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        timeout: float = 180.0
+    ) -> AsyncGenerator[Dict[str, str], None]:
+        """
+        Yields detailed stream events:
+        {"type": "thinking", "text": "..."}
+        {"type": "content", "text": "..."}
+        Guarantees that the caller can display live thinking animations and content.
+        """
+        balanced_opts = get_balanced_ollama_options(
+            model_name=model,
+            requested_context=context_length,
+            requested_temperature=temperature
+        )
+        if options:
+            balanced_opts.update(options)
+
+        thinking_buffer: List[str] = []
+        has_yielded_content = False
+
+        async for chunk in self.stream_chat(model=model, messages=messages, options=balanced_opts, tools=tools, timeout=timeout):
+            msg = chunk.get("message", {})
+            token = msg.get("content", "")
+            thinking_token = msg.get("thinking", "")
+            if thinking_token:
+                thinking_buffer.append(thinking_token)
+                yield {"type": "thinking", "text": thinking_token}
+            if token:
+                has_yielded_content = True
+                yield {"type": "content", "text": token}
+
+        if not has_yielded_content and thinking_buffer:
+            thought_text = "".join(thinking_buffer).strip()
+            if thought_text:
+                yield {"type": "content", "text": f"**Analysis & Findings (from Reasoning Engine):**\n\n{thought_text}"}
 
     async def generate(
         self,
@@ -420,11 +537,47 @@ class OllamaService:
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             res = await client.post(f"{self.base_url}/api/generate", json=payload)
-            if res.status_code != 200:
-                raise RuntimeError(f"Ollama generate error HTTP {res.status_code}: {res.text}")
-            data = res.json()
-            resp_str = data.get("response", "")
-            return OllamaGenerateResponse(resp_str, raw=data)
+            if res.status_code == 200:
+                data = res.json()
+                resp_str = data.get("response", "")
+                if not resp_str and data.get("thinking"):
+                    resp_str = f"**Technical Diagnostic Findings (Reasoning):**\n\n{data['thinking']}"
+                return OllamaGenerateResponse(resp_str, raw=data)
+
+            err_text = res.text
+            # Automatic resilient recovery for llama-server process crash / CUDA buffer overrun
+            if res.status_code == 500 and ("llama-server" in err_text or "0xc0000409" in err_text or "CUDA" in err_text or "buffer" in err_text):
+                logger.warning(f"Ollama llama-server error ({res.status_code}): {err_text}. Initiating safe fallback retry...")
+                await asyncio.sleep(2.0)
+                fallback_opts = dict(balanced_opts)
+                fallback_opts["num_ctx"] = min(fallback_opts.get("num_ctx", 4096), 4096)
+                fallback_opts["num_thread"] = 4
+                fallback_opts["num_batch"] = min(fallback_opts.get("num_batch", 256), 256)
+                payload["options"] = fallback_opts
+
+                res2 = await client.post(f"{self.base_url}/api/generate", json=payload)
+                if res2.status_code == 200:
+                    data = res2.json()
+                    resp_str = data.get("response", "")
+                    if not resp_str and data.get("thinking"):
+                        resp_str = f"**Technical Diagnostic Findings (Reasoning):**\n\n{data['thinking']}"
+                    logger.info("Ollama generate recovered successfully via safe fallback parameters.")
+                    return OllamaGenerateResponse(resp_str, raw=data)
+
+                if "CUDA" in res2.text or "0xc0000409" in res2.text or "llama-server" in res2.text:
+                    await asyncio.sleep(2.0)
+                    fallback_opts["num_gpu"] = 0
+                    payload["options"] = fallback_opts
+                    res3 = await client.post(f"{self.base_url}/api/generate", json=payload)
+                    if res3.status_code == 200:
+                        data = res3.json()
+                        resp_str = data.get("response", "")
+                        if not resp_str and data.get("thinking"):
+                            resp_str = f"**Technical Diagnostic Findings (Reasoning):**\n\n{data['thinking']}"
+                        logger.info("Ollama generate recovered successfully via CPU fallback.")
+                        return OllamaGenerateResponse(resp_str, raw=data)
+
+            raise RuntimeError(f"Ollama generate error HTTP {res.status_code}: {res.text}")
 
     async def pull_model(
         self,

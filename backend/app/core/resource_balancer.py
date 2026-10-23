@@ -67,25 +67,47 @@ def get_live_telemetry(force_refresh: bool = False) -> Dict[str, Any]:
     free_vram_gb = total_vram_gb
     used_vram_gb = 0.0
     vram_percent = 0.0
+    total_vram_mb = total_vram_gb * 1024.0
+    used_vram_mb = 0.0
+    free_vram_mb = total_vram_mb
+    gpu_util_pct = 0.0
+    mem_util_pct = 0.0
+    temperature_c = 0.0
+    power_w = 0.0
 
     # Query real-time NVIDIA VRAM via nvidia-smi if applicable
     if gpu_vendor == "nvidia":
         nvidia_smi = shutil.which("nvidia-smi")
         if nvidia_smi:
             try:
+                flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
                 out = subprocess.check_output(
-                    [nvidia_smi, "--query-gpu=memory.total,memory.used,memory.free,utilization.gpu", "--format=csv,noheader,nounits"],
+                    [
+                        nvidia_smi,
+                        "--query-gpu=memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw",
+                        "--format=csv,noheader,nounits"
+                    ],
                     text=True,
-                    timeout=1,
+                    timeout=2.0,
+                    creationflags=flags,
                     stderr=subprocess.DEVNULL
                 ).strip()
                 if out:
                     parts = [float(p.strip()) for p in out.splitlines()[0].split(",")]
                     if len(parts) >= 3:
-                        total_vram_gb = round(parts[0] / 1024.0, 1)
-                        used_vram_gb = round(parts[1] / 1024.0, 1)
-                        free_vram_gb = round(parts[2] / 1024.0, 1)
-                        vram_percent = round((used_vram_gb / total_vram_gb) * 100, 1) if total_vram_gb > 0 else 0.0
+                        total_vram_mb = parts[0]
+                        used_vram_mb = parts[1]
+                        free_vram_mb = parts[2]
+                        gpu_util_pct = parts[3] if len(parts) > 3 else 0.0
+                        mem_util_pct = parts[4] if len(parts) > 4 else 0.0
+                        temperature_c = parts[5] if len(parts) > 5 else 0.0
+                        power_w = parts[6] if len(parts) > 6 else 0.0
+
+                        total_vram_gb = round(total_vram_mb / 1024.0, 2)
+                        used_vram_gb = round(used_vram_mb / 1024.0, 2)
+                        free_vram_gb = round(free_vram_mb / 1024.0, 2)
+                        # Compute vram_percent directly from unrounded raw MiB for continuous live precision
+                        vram_percent = round((used_vram_mb / total_vram_mb) * 100.0, 1) if total_vram_mb > 0 else 0.0
             except Exception:
                 pass
 
@@ -93,15 +115,23 @@ def get_live_telemetry(force_refresh: bool = False) -> Dict[str, Any]:
     elif is_unified or gpu_vendor in ["apple", "qualcomm"]:
         total_vram_gb = mem.get("total_gb", 0.0)
         free_vram_gb = mem.get("available_gb", 0.0)
-        used_vram_gb = round(total_vram_gb - free_vram_gb, 1)
+        used_vram_gb = round(total_vram_gb - free_vram_gb, 2)
         vram_percent = mem.get("percent_used", 0.0)
+        total_vram_mb = total_vram_gb * 1024.0
+        free_vram_mb = free_vram_gb * 1024.0
+        used_vram_mb = used_vram_gb * 1024.0
+        gpu_util_pct = cpu_percent
 
     # General fallback for discrete AMD/Intel if direct driver query isn't available
     elif total_vram_gb > 0 and free_vram_gb == total_vram_gb:
-        # Estimate conservative free headroom
-        free_vram_gb = round(total_vram_gb * 0.75, 1)
-        used_vram_gb = round(total_vram_gb * 0.25, 1)
-        vram_percent = 25.0
+        ram_ratio = mem.get("percent_used", 30.0) / 100.0
+        used_vram_gb = round(total_vram_gb * ram_ratio * 0.4, 2)
+        free_vram_gb = round(total_vram_gb - used_vram_gb, 2)
+        vram_percent = round((used_vram_gb / total_vram_gb) * 100.0, 1)
+        total_vram_mb = total_vram_gb * 1024.0
+        free_vram_mb = free_vram_gb * 1024.0
+        used_vram_mb = used_vram_gb * 1024.0
+        gpu_util_pct = cpu_percent
 
     telemetry = {
         "timestamp": now,
@@ -128,7 +158,14 @@ def get_live_telemetry(force_refresh: bool = False) -> Dict[str, Any]:
             "total_vram_gb": total_vram_gb,
             "free_vram_gb": free_vram_gb,
             "used_vram_gb": used_vram_gb,
+            "total_vram_mb": total_vram_mb,
+            "free_vram_mb": free_vram_mb,
+            "used_vram_mb": used_vram_mb,
             "vram_percent_used": vram_percent,
+            "gpu_util_percent": gpu_util_pct,
+            "memory_util_percent": mem_util_pct,
+            "temperature_c": temperature_c,
+            "power_w": power_w,
             "details": accel.get("details", "")
         }
     }
@@ -202,9 +239,9 @@ def get_current_load_profile(telemetry: Optional[Dict[str, Any]] = None) -> Dict
         comfy_flags = ["--lowvram"] if vendor in ["nvidia", "amd", "intel"] else ["--cpu", "--use-split-cross-attention"]
         safe_max_dim = 512
 
-    # If currently experiencing high memory pressure (> 88% RAM used or < 2GB free VRAM), downgrade safe bounds
+    # If currently experiencing high memory pressure (> 90% RAM used or < 0.8GB free VRAM), downgrade safe bounds
     ram_used_pct = mem.get("percent_used", 0.0)
-    if ram_used_pct > 88.0 or (total_vram > 0 and free_vram < 2.0):
+    if ram_used_pct > 90.0 or (total_vram > 0 and free_vram < 0.8):
         max_safe_context = min(max_safe_context, 4096)
         default_context = min(default_context, 2048)
         batch_size = min(batch_size, 128)
@@ -213,6 +250,9 @@ def get_current_load_profile(telemetry: Optional[Dict[str, Any]] = None) -> Dict
             comfy_flags = ["--medvram"]
         elif "--medvram" in comfy_flags:
             comfy_flags = ["--lowvram"]
+    elif ram_used_pct > 84.0 or (total_vram > 0 and free_vram < 1.5):
+        max_safe_context = min(max_safe_context, 8192)
+        default_context = min(default_context, 4096)
 
     return {
         "tier": tier,
@@ -252,10 +292,13 @@ def get_balanced_ollama_options(
 
     temp = requested_temperature if requested_temperature is not None else 0.7
 
+    # Cap thread count strictly to 8 maximum to prevent thread stack buffer overruns in llama-server
+    safe_threads = min(8, max(2, profile.get("optimal_threads", 4)))
+
     options: Dict[str, Any] = {
         "temperature": temp,
         "num_ctx": actual_ctx,
-        "num_thread": profile["optimal_threads"],
+        "num_thread": safe_threads,
         "num_batch": profile["prompt_batch_size"],
     }
 
@@ -270,8 +313,9 @@ def get_balanced_comfyui_args(base_dir: Optional[Any] = None) -> List[str]:
     """
     Computes the optimal CLI arguments for starting local ComfyUI:
     - On Apple Silicon MPS: native Metal Performance Shaders without CPU flag.
-    - On NVIDIA/AMD/Intel: dynamically applies --highvram, --medvram, or --lowvram based on VRAM capacity.
-    - On CPU-only systems: applies --cpu --use-split-cross-attention.
+    - On NVIDIA/AMD/Intel: dynamically applies --highvram, --medvram, or --lowvram based on VRAM capacity
+      ONLY if PyTorch runtime actually has CUDA/ROCm/XPU compiled and available.
+    - On CPU-only systems or CPU-compiled PyTorch: applies --cpu --use-split-cross-attention.
     """
     profile = get_current_load_profile()
     accel = profile["telemetry"]["accelerator"]
@@ -283,13 +327,26 @@ def get_balanced_comfyui_args(base_dir: Optional[Any] = None) -> List[str]:
     if vendor == "apple":
         return args
 
-    # Check for dedicated GPU vs CPU
-    if vendor in ["nvidia", "amd", "intel"]:
+    # Verify if PyTorch has native GPU acceleration compiled & available
+    has_torch_gpu = False
+    try:
+        import torch
+        if vendor == "nvidia" and torch.cuda.is_available():
+            has_torch_gpu = True
+        elif vendor == "amd" and (getattr(torch.version, "hip", None) is not None or torch.cuda.is_available()):
+            has_torch_gpu = True
+        elif vendor == "intel" and hasattr(torch, "xpu") and torch.xpu.is_available():
+            has_torch_gpu = True
+    except Exception:
+        has_torch_gpu = False
+
+    # Dedicated GPU with CUDA/ROCm/XPU-compiled PyTorch
+    if vendor in ["nvidia", "amd", "intel"] and has_torch_gpu:
         for flag in profile["comfyui_cli_flags"]:
             if flag not in args:
                 args.append(flag)
     else:
-        # Generic CPU execution
+        # Fallback to CPU execution (safely prevents AssertionError: Torch not compiled with CUDA enabled)
         if "--cpu" not in args:
             args.extend(["--cpu", "--use-split-cross-attention"])
 

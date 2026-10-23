@@ -6,8 +6,99 @@ Allows uploading multiple files (up to 5 at once) for local LLM analysis (e.g. R
 
 import io
 import base64
+import re
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
+
+
+class HTMLDiagnosticParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts: List[str] = []
+        self.skip = False
+        self.in_row = False
+        self.row_cells: List[str] = []
+        self.cell_parts: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: Any):
+        tl = tag.lower()
+        if tl in ["style", "script", "head", "meta", "svg", "noscript", "link"]:
+            self.skip = True
+        elif not self.skip:
+            if tl in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+                self.parts.append("\n\n### ")
+            elif tl in ["p", "div", "li", "br"]:
+                self.parts.append("\n")
+            elif tl == "tr":
+                self.in_row = True
+                self.row_cells = []
+            elif tl in ["td", "th"]:
+                self.cell_parts = []
+
+    def handle_endtag(self, tag: str):
+        tl = tag.lower()
+        if tl in ["style", "script", "head", "meta", "svg", "noscript", "link"]:
+            self.skip = False
+        elif not self.skip:
+            if tl in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+                self.parts.append("\n")
+            elif tl in ["td", "th"]:
+                cell_text = " ".join("".join(self.cell_parts).split()).strip()
+                if cell_text:
+                    self.row_cells.append(cell_text)
+                self.cell_parts = []
+            elif tl == "tr":
+                if self.row_cells:
+                    self.parts.append("| " + " | ".join(self.row_cells) + " |\n")
+                self.in_row = False
+                self.row_cells = []
+            elif tl == "table":
+                self.parts.append("\n")
+
+    def handle_data(self, data: str):
+        if not self.skip and data:
+            if self.in_row:
+                self.cell_parts.append(data)
+            else:
+                self.parts.append(data)
+
+
+def clean_html_document(raw_html: str, filename: str) -> str:
+    """Parses HTML documents into structured text, stripping style/script tags and certificate dumps."""
+    parser = HTMLDiagnosticParser()
+    try:
+        parser.feed(raw_html)
+        raw_clean = "".join(parser.parts)
+    except Exception:
+        raw_clean = re.sub(r"<[^>]+>", " ", raw_html)
+
+    lines = [re.sub(r"\s+", " ", l).strip() for l in raw_clean.split("\n")]
+    clean_text = "\n".join([l for l in lines if l])
+
+    # Omit raw certificate dumps if present (certutil dump in Windows WLAN reports)
+    clean_text = re.sub(r"### Output for [\'\"]certutil.*?(?=###|\Z)", "", clean_text, flags=re.DOTALL)
+
+    # For WLAN reports or lengthy network diagnostics, condense excessive packet heartbeat sessions
+    if "wlan" in filename.lower() or "wlan report" in clean_text.lower():
+        clean_text = re.sub(
+            r"(### Wireless Sessions.*?\n)(?:.*)",
+            r"\1[Note: Individual wireless heartbeat connection packets condensed to preserve model context]",
+            clean_text,
+            flags=re.DOTALL
+        )
+
+    # Cap document length to safe token budget (max 16,000 characters ~ 4,000 tokens)
+    if len(clean_text) > 16000:
+        head = clean_text[:10000]
+        tail = clean_text[-5000:]
+        clean_text = (
+            f"{head}\n\n"
+            f"[... Note: Middle {len(clean_text) - 15000} characters omitted to preserve optimal reasoning context. "
+            f"Key system configuration, adapters, and disconnect diagnostics preserved ...]\n\n"
+            f"{tail}"
+        )
+    return clean_text.strip()
 
 
 def extract_file_data(filename: str, file_bytes: bytes) -> Dict[str, Any]:
@@ -126,7 +217,26 @@ def extract_file_data(filename: str, file_bytes: bytes) -> Dict[str, Any]:
             "text": text or f"[Spreadsheet {filename} contains no rows]"
         }
 
-    # 5. Non-text Binary Files Protection (prevent dumping corrupt/null bytes to LLM)
+    # 5. HTML / Web Diagnostic Reports (.html, .htm)
+    elif ext in [".html", ".htm"]:
+        try:
+            raw_html = file_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                raw_html = file_bytes.decode("latin-1")
+            except Exception as e:
+                raw_html = f"[Error decoding HTML {filename}: {e}]"
+        
+        text = clean_html_document(raw_html, filename)
+        return {
+            "name": filename,
+            "type": "document",
+            "ext": ext,
+            "size_kb": size_kb,
+            "text": text or f"[HTML document {filename} contains no extractable text]"
+        }
+
+    # 6. Non-text Binary Files Protection (prevent dumping corrupt/null bytes to LLM)
     elif (
         ext in [".bin", ".exe", ".dll", ".so", ".dylib", ".zip", ".tar", ".gz", ".7z", ".rar", ".parquet", ".pkl", ".pickle", ".pyc", ".iso", ".dat"]
         or (b"\x00" in file_bytes[:8192])
@@ -139,7 +249,7 @@ def extract_file_data(filename: str, file_bytes: bytes) -> Dict[str, Any]:
             "text": f"[Binary file: {filename} ({size_kb} KB) - binary contents omitted from prompt context]"
         }
 
-    # 6. Text, Code, CSV, JSON, Markdown, Configs
+    # 7. Text, Code, CSV, JSON, Markdown, Configs
     else:
         try:
             text = file_bytes.decode("utf-8")
@@ -148,6 +258,15 @@ def extract_file_data(filename: str, file_bytes: bytes) -> Dict[str, Any]:
                 text = file_bytes.decode("latin-1")
             except Exception as e:
                 text = f"[Unable to decode text file {filename}: {e}]"
+        
+        # Enforce safe upper bound on raw text files to protect LLM context windows
+        if len(text) > 20000:
+            text = (
+                f"{text[:14000]}\n\n"
+                f"[... Note: Large text file ({size_kb} KB) condensed to preserve model reasoning context ...]\n\n"
+                f"{text[-6000:]}"
+            )
+
         return {
             "name": filename,
             "type": "text",

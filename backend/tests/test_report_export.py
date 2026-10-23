@@ -105,3 +105,53 @@ def test_export_report_bundle():
         assert len(bundle[fmt]["bytes"]) > 0
         assert "filename" in bundle[fmt]
         assert bundle[fmt]["filename"].endswith(f".{fmt}")
+
+
+def test_executive_report_generator_prompt():
+    from app.services.report_generator_service import (
+        build_executive_report_prompt,
+        parse_kpi_cards_from_report,
+        style_report_markdown,
+        EXECUTIVE_SYSTEM_PROMPT
+    )
+    prompt = build_executive_report_prompt("Autonomous AI Cloud Migration", scope="Analyze private air-gapped setup")
+    assert "Autonomous AI Cloud Migration" in prompt
+    assert "Executive Performance & KPI Dashboard" in prompt
+    assert "Mermaid" in prompt
+    assert "Enterprise Risk & Vulnerability Matrix" in prompt
+    assert len(EXECUTIVE_SYSTEM_PROMPT) > 200
+
+
+def test_parse_kpi_cards_and_color_styling():
+    from app.services.report_generator_service import parse_kpi_cards_from_report, style_report_markdown
+
+    sample_exec_md = """# 🏛️ EXECUTIVE STRATEGIC REPORT: Project Titan
+
+## 📊 1. Executive Performance & KPI Dashboard
+| Strategic Pillar | Target KPI | Actual Performance | Benchmark Status | Risk Exposure |
+| :--- | :--- | :--- | :--- | :--- |
+| **System Availability & SLA** | ≥ 99.90% | 99.99% High Availability | 🟢 **OPTIMAL** | 🟢 Minimal |
+| **Inference & Execution Velocity** | > 35 tokens/sec | 62.4 tokens/sec | 🟢 **BENCHMARK LEADER** | 🟢 Low |
+| **Data Privacy & Zero Egress** | 100% On-Premise | 100% Air-Gapped Air-Locked | 🔵 **VERIFIED AIR-GAPPED** | 🟢 Zero Exposure |
+| **Annualized TCO Efficiency** | > 50% Reduction | 74.2% Cost Reduction | 🟢 **HIGH ROI** | 🟢 Low |
+
+## ⚠️ 5. Enterprise Risk Matrix
+| Risk Threat | Severity | Status |
+| --- | --- | --- |
+| Memory Overrun | 🔴 CRITICAL | 🔴 IMMEDIATE ACTION |
+| Model Drift | 🟡 MEDIUM | 🟡 ATTENTION NEEDED |
+"""
+    cards = parse_kpi_cards_from_report(sample_exec_md)
+    assert len(cards) == 4
+    assert cards[0]["title"] == "System Availability & SLA"
+    assert "99.99%" in cards[0]["value"]
+    assert cards[0]["badge"] == "OPTIMAL"
+    assert cards[2]["badge"] == "VERIFIED AIR-GAPPED"
+    assert cards[3]["badge"] == "HIGH ROI"
+
+    styled = style_report_markdown(sample_exec_md)
+    assert '<span style="background: #ecfdf5;' in styled
+    assert '<span style="background: #fef2f2;' in styled
+    assert '<span style="background: #fffbeb;' in styled
+    assert '<span style="background: #f0f9ff;' in styled
+

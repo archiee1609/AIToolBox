@@ -10,6 +10,7 @@ import asyncio
 import json
 import uuid
 import datetime
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -73,7 +74,7 @@ from app.services.comfyui_service import comfyui_service, POPULAR_MODELS, parse_
 from app.services.tool_registry import tool_registry
 from app.services.coding_agent_service import coding_agent_service
 from app.services.document_service import process_uploaded_files, extract_file_data
-from app.services.model_download_service import model_download_manager
+from app.services.model_download_service import model_download_manager, parse_model_names
 from app.schemas.image import ImageGenerateRequest
 
 @st.cache_data(ttl=30)
@@ -82,7 +83,7 @@ def get_cached_system_info():
 
 @st.cache_data(ttl=2)
 def get_cached_load_profile():
-    return get_current_load_profile()
+    return get_current_load_profile(get_live_telemetry(force_refresh=True))
 
 # Helper to execute async functions in Streamlit safely
 def run_async(coro):
@@ -495,16 +496,90 @@ def is_report_content(content: str) -> bool:
         return False
     indicators = [
         content.startswith("## 📄"),
+        content.startswith("# 🏛️"),
+        "EXECUTIVE STRATEGIC REPORT" in content.upper(),
+        "EXECUTIVE PERFORMANCE & KPI DASHBOARD" in content.upper(),
         "📄 Executive Report" in content,
         "# Executive Summary" in content,
         "## Executive Summary" in content,
         "### Executive Summary" in content,
+        "## 1. Executive Performance" in content,
+        "# 1. Executive Performance" in content,
+        "1. Executive Performance & KPI Dashboard" in content,
         "# Actionable Recommendations" in content,
         "## Actionable Recommendations" in content,
         "## Key Findings" in content,
-        "# Key Findings" in content
+        "# Key Findings" in content,
+        ("WLAN REPORT" in content.upper() and ("DISCONNECT" in content.upper() or "SUMMARY" in content.upper())),
+        "WLAN NETWORK DIAGNOSTICS" in content.upper(),
+        "NETWORK STABILITY REPORT" in content.upper(),
+        "TECHNICAL DIAGNOSTIC" in content.upper(),
+        "CUSTOMER REMEDIATION" in content.upper(),
     ]
     return any(indicators)
+
+
+def detect_report_request(
+    prompt: str,
+    attached_docs_context: List[str],
+    history_messages: List[Dict[str, Any]]
+) -> Tuple[bool, str, str, str]:
+    """
+    Detects whether the user is requesting an executive or technical report,
+    or asking for a downloadable PDF / report file.
+    Returns (is_report, title, scope, context_str).
+    """
+    p_strip = prompt.strip()
+    p_lower = p_strip.lower()
+
+    # 1. Explicit /report command
+    if p_strip.startswith("/report"):
+        raw_rep = p_strip[7:].strip()
+        if raw_rep.startswith(":"):
+            raw_rep = raw_rep[1:].strip()
+        if " -- " in raw_rep:
+            title, scope = raw_rep.split(" -- ", 1)
+        else:
+            title, scope = (raw_rep or "Executive Strategic Report"), ""
+        context_str = "\n\n".join(attached_docs_context)
+        return True, title, scope, context_str
+
+    # 2. Natural language report & export intents
+    report_keywords = [
+        "downloadable pdf", "downloadable report", "downloadable file", "download pdf",
+        "export as pdf", "export to pdf", "create a pdf", "generate a pdf",
+        "generate a report", "generate an executive report", "generate report",
+        "executive report", "technical report", "customer report", "diagnostic report",
+        "share it to the customer", "share with the customer", "share with customer",
+        "give a downloadable", "provide a downloadable",
+        "wlan report", "network report"
+    ]
+
+    has_keyword = any(k in p_lower for k in report_keywords)
+    if has_keyword:
+        # Determine appropriate title
+        if "wlan" in p_lower or any("wlan" in c.lower() for c in attached_docs_context):
+            title = "WLAN Technical Diagnostics & Network Stability Report"
+        elif any("inventory" in c.lower() for c in attached_docs_context):
+            title = "Executive Strategic Report: Retail Inventory & Supply Chain Performance"
+        elif "sales" in p_lower or any("sales" in c.lower() for c in attached_docs_context):
+            title = "Executive Sales & Revenue Performance Report"
+        else:
+            words = [w for w in p_strip.split() if w.lower() not in ["give", "a", "the", "and", "so", "that", "i", "can", "to", "please", "analyse", "analyze"]]
+            title = (" ".join(words[:6])).title()
+            if not title or len(title) < 5:
+                title = "Executive Technical & Strategic Performance Report"
+
+        scope = p_strip
+        if attached_docs_context:
+            context_str = "\n\n".join(attached_docs_context)
+        else:
+            prev_assist = [m for m in history_messages if m.get("role") == "assistant" and m.get("content")]
+            context_str = prev_assist[-1]["content"] if prev_assist else ""
+
+        return True, title, scope, context_str
+
+    return False, "", "", ""
 
 
 @st.cache_data(show_spinner=False)
@@ -624,6 +699,81 @@ def render_report_export_toolbar(markdown_content: str, default_title: str = "Ex
             )
         else:
             st.button("📦 All (.zip)", disabled=True, key=f"{key_prefix}_zip_dis", use_container_width=True)
+
+
+def render_executive_report_view(report_content: str, default_title: str = "Executive Report", key_prefix: str = "rep"):
+    """
+    Renders a comprehensive, board-ready executive report view with:
+    - Executive Header Banner & C-Suite Classification
+    - 4-Up Visual KPI Dashboard with color status pills
+    - Color-coded markdown tables and styled risk matrices
+    - Native Mermaid architecture diagrams
+    - Instant 6-format download toolbar (PDF, Word, Excel, PPTX, Markdown, ZIP)
+    """
+    from app.services.report_generator_service import parse_kpi_cards_from_report, style_report_markdown
+    
+    # Extract clean title from content if present
+    extracted_title = default_title
+    for line in report_content.splitlines()[:5]:
+        line_clean = line.strip()
+        if line_clean.startswith("# 🏛️") or line_clean.startswith("## 📄") or line_clean.startswith("# "):
+            candidate = re.sub(r'^#+\s*(?:🏛️|📄)?\s*(?:EXECUTIVE\s*(?:STRATEGIC)?\s*REPORT:?)?\s*', '', line_clean, flags=re.IGNORECASE).strip()
+            if candidate:
+                extracted_title = candidate
+                break
+
+    # Parse KPI Dashboard cards
+    kpis = parse_kpi_cards_from_report(report_content)
+    
+    # Render Executive Dashboard Banner
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, rgba(15, 23, 42, 0.08) 0%, rgba(30, 41, 59, 0.04) 100%); border: 1px solid rgba(148, 163, 184, 0.3); border-radius: 12px; padding: 0.85rem 1.1rem; margin-bottom: 0.85rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 1.15rem;">📊</span>
+                <span style="font-size: 0.85rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase;">
+                    Executive Performance & KPI Dashboard
+                </span>
+            </div>
+            <span style="font-size: 0.7rem; font-weight: 800; background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.35); padding: 2px 8px; border-radius: 9999px; letter-spacing: 0.04em;">
+                CONFIDENTIAL // BOARD ACCESS
+            </span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Render 4-up KPI Cards
+    if kpis:
+        cols = st.columns(len(kpis))
+        for idx, card in enumerate(kpis):
+            with cols[idx]:
+                c_color = card.get("color", "#10b981")
+                st.markdown(f"""
+                <div style="background: rgba(148, 163, 184, 0.06); border: 1px solid rgba(148, 163, 184, 0.25); border-top: 3.5px solid {c_color}; border-radius: 10px; padding: 0.85rem 0.95rem; margin-bottom: 0.85rem; min-height: 105px;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.35rem; gap: 4px;">
+                        <span style="font-size: 0.73rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.03em; line-height: 1.2;">
+                            {card['title']}
+                        </span>
+                        <span style="font-size: 0.65rem; font-weight: 800; color: {c_color}; background: {c_color}20; border: 1px solid {c_color}45; padding: 2px 6px; border-radius: 9999px; white-space: nowrap;">
+                            {card['badge']}
+                        </span>
+                    </div>
+                    <div style="font-size: 1.6rem; font-weight: 800; line-height: 1.15; margin-bottom: 0.2rem;">
+                        {card['value']}
+                    </div>
+                    <div style="font-size: 0.72rem; color: #94a3b8; font-weight: 500;">
+                        {card['target']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+    # Style markdown with color badges and render
+    styled_content = style_report_markdown(report_content)
+    st.markdown(styled_content, unsafe_allow_html=True)
+
+    # Render Export Toolbar
+    render_report_export_toolbar(report_content, default_title=extracted_title, key_prefix=key_prefix)
+
 
 # Initialize Database and Ensure Migrations
 @st.cache_resource
@@ -869,10 +1019,18 @@ with st.sidebar:
     show_all_modules = st.query_params.get("show_all") in ["1", "true"]
     nav_options = ALL_MODULE_PAGES if show_all_modules else ["💬 All-in-One Studio", "⚙️ More"]
 
+    req_page = st.query_params.get("page")
+    page_idx = 0
+    if req_page:
+        for i, opt in enumerate(nav_options):
+            if req_page.lower() in opt.lower():
+                page_idx = i
+                break
+
     selected_page = st.radio(
         "Navigation",
         nav_options,
-        index=0,
+        index=page_idx,
         label_visibility="collapsed"
     )
 
@@ -884,6 +1042,10 @@ with st.sidebar:
         init_id = create_new_conversation("New Chat", model_names[0] if model_names else "gemma4:12b")
         st.session_state["active_conv_id"] = init_id
         all_conversations = get_conversations(35)
+
+    req_conv = st.query_params.get("conv")
+    if req_conv and any(c["id"] == req_conv for c in all_conversations):
+        st.session_state["active_conv_id"] = req_conv
 
     if "active_conv_id" not in st.session_state or not any(c["id"] == st.session_state["active_conv_id"] for c in all_conversations):
         st.session_state["active_conv_id"] = all_conversations[0]["id"]
@@ -957,32 +1119,44 @@ with st.sidebar:
                 run_async(comfyui_service.start_service())
                 st.rerun()
 
-    # Live Auto Load Balancer Telemetry Card
-    try:
-        lb_profile = get_cached_load_profile()
-        lb_tier_badge = lb_profile.get("badge", "⚡ Balanced")
-        lb_tier_color = lb_profile.get("color", "#0284c7")
-        lb_tele = lb_profile.get("telemetry", {})
-        lb_cpu = lb_tele.get("cpu", {})
-        lb_mem = lb_tele.get("memory", {})
-        lb_threads = lb_profile.get("optimal_threads", 4)
-        lb_safe_ctx = lb_profile.get("max_safe_context", 4096)
-        lb_ram_used = round(lb_mem.get("total_gb", 0) - lb_mem.get("available_gb", 0), 1)
+    # Live Auto Load Balancer Telemetry Card (Real-time 2s auto-refresh fragment)
+    @st.fragment(run_every="2s")
+    def render_sidebar_balancer_widget():
+        try:
+            live_tele = get_live_telemetry(force_refresh=True)
+            lb_profile = get_current_load_profile(live_tele)
+            lb_tier_badge = lb_profile.get("badge", "⚡ Balanced")
+            lb_tier_color = lb_profile.get("color", "#0284c7")
+            lb_tele = lb_profile.get("telemetry", {})
+            lb_cpu = lb_tele.get("cpu", {})
+            lb_mem = lb_tele.get("memory", {})
+            lb_accel = lb_tele.get("accelerator", {})
+            lb_threads = lb_profile.get("optimal_threads", 4)
+            lb_safe_ctx = lb_profile.get("max_safe_context", 4096)
+            lb_ram_used = round(lb_mem.get("total_gb", 0) - lb_mem.get("available_gb", 0), 1)
+            lb_vram_pct = lb_accel.get("vram_percent_used", 0.0)
+            lb_gpu_util = lb_accel.get("gpu_util_percent", 0.0)
 
-        st.markdown(f"""
-        <div style="margin-top: 0.65rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.5rem 0.65rem;">
-            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.74rem; font-weight: 700; color: #0f172a; margin-bottom: 3px;">
-                <span>⚡ Auto Balancer</span>
-                <span style="color: {lb_tier_color}; font-weight: 700;">{lb_tier_badge}</span>
+            gpu_line = f" • VRAM: <b>{lb_vram_pct:.1f}%</b>" if lb_vram_pct > 0 else ""
+            if lb_gpu_util > 0:
+                gpu_line += f" <span style='color: #059669;'>({lb_gpu_util:.0f}% GPU)</span>"
+
+            st.markdown(f"""
+            <div style="margin-top: 0.65rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.5rem 0.65rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.74rem; font-weight: 700; color: #0f172a; margin-bottom: 3px;">
+                    <span>⚡ Auto Balancer</span>
+                    <span style="color: {lb_tier_color}; font-weight: 700;">{lb_tier_badge}</span>
+                </div>
+                <div style="font-size: 0.71rem; color: #64748b; line-height: 1.35;">
+                    CPU: <b>{lb_cpu.get('percent_used', 0.0)}%</b> • RAM: <b>{lb_ram_used}/{lb_mem.get('total_gb', 0)} GB</b>{gpu_line}<br>
+                    Allocation: <b>{lb_threads} Cores</b> • Safe Ctx: <b>{lb_safe_ctx} tok</b>
+                </div>
             </div>
-            <div style="font-size: 0.71rem; color: #64748b; line-height: 1.35;">
-                CPU: <b>{lb_cpu.get('percent_used', 0.0)}%</b> • RAM: <b>{lb_ram_used}/{lb_mem.get('total_gb', 0)} GB</b><br>
-                Allocation: <b>{lb_threads} Cores</b> • Safe Ctx: <b>{lb_safe_ctx} tok</b>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    except Exception:
-        pass
+            """, unsafe_allow_html=True)
+        except Exception:
+            pass
+
+    render_sidebar_balancer_widget()
 
     st.caption(f"🧠 {len(active_memories)} active memories injected into prompts")
 
@@ -1154,7 +1328,11 @@ def render_diagnostics_section():
         accel = live_tele.get("accelerator", {})
         lb_vram_pct = accel.get("vram_percent_used", 0.0)
         total_vram = accel.get("total_vram_gb", 0.0)
+        used_vram = accel.get("used_vram_gb", 0.0)
         free_vram = accel.get("free_vram_gb", 0.0)
+        free_vram_mb = accel.get("free_vram_mb", 0.0)
+        gpu_util_pct = accel.get("gpu_util_percent", 0.0)
+        gpu_temp = accel.get("temperature_c", 0.0)
 
         head_c1, head_c2 = st.columns([3, 1])
         with head_c1:
@@ -1167,12 +1345,25 @@ def render_diagnostics_section():
             st.metric("CPU Utilization", f"{lb_cpu_pct:.1f}%")
             st.progress(min(max(lb_cpu_pct / 100.0, 0.0), 1.0))
         with col_g2:
-            st.metric("System RAM Used", f"{lb_mem_pct:.1f}%", f"{lb_avail_ram:.1f} GB Free")
+            st.metric("System RAM Used", f"{lb_mem_pct:.1f}%", f"{lb_avail_ram:.1f} GB Free", delta_color="off")
             st.progress(min(max(lb_mem_pct / 100.0, 0.0), 1.0))
         with col_g3:
-            vram_lbl = f"{free_vram:.1f} GB Free" if total_vram > 0 else "Unified / CPU"
-            st.metric("VRAM / Memory Load", f"{lb_vram_pct:.1f}%", vram_lbl)
+            if total_vram > 0:
+                if free_vram < 1.0 and free_vram_mb > 0:
+                    free_lbl = f"{free_vram_mb:.0f} MB Free"
+                else:
+                    free_lbl = f"{free_vram:.1f} GB Free"
+
+                vram_delta = f"{free_lbl} • {gpu_util_pct:.0f}% GPU"
+            else:
+                vram_delta = "Unified / CPU"
+
+            st.metric("VRAM / Memory Load", f"{lb_vram_pct:.1f}%", vram_delta, delta_color="off")
             st.progress(min(max(lb_vram_pct / 100.0, 0.0), 1.0))
+
+        vram_info = f"<b>Live VRAM:</b> {used_vram:.2f} / {total_vram:.2f} GB ({lb_vram_pct:.1f}%)" if total_vram > 0 else ""
+        gpu_info = f" • <b>GPU Core:</b> {gpu_util_pct:.0f}%" if gpu_util_pct > 0 else ""
+        temp_info = f" • <b>Temp:</b> {gpu_temp:.0f}°C" if gpu_temp > 0 else ""
 
         profile_card_html = (
             f'<div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.85rem 1.1rem; margin-top: 0.5rem; margin-bottom: 1.25rem;">'
@@ -1184,7 +1375,9 @@ def render_diagnostics_section():
             f'</div>'
             f'<div style="font-size: 0.82rem; color: #475569; line-height: 1.45;">'
             f'{lb_prof["description"]}<br>'
-            f'<b>Auto-Allocated:</b> {lb_prof["optimal_threads"]} CPU Threads • Batch Size: {lb_prof["prompt_batch_size"]} • Safe Context Ceiling: {lb_prof["max_safe_context"]} tokens • ComfyUI Flags: <code>{" ".join(lb_prof["comfyui_cli_flags"]) or "Native Metal"}</code>'
+            f'{vram_info}{gpu_info}{temp_info}'
+            + (f'<br>' if vram_info else '')
+            + f'<b>Auto-Allocated:</b> {lb_prof["optimal_threads"]} CPU Threads • Batch Size: {lb_prof["prompt_batch_size"]} • Safe Context Ceiling: {lb_prof["max_safe_context"]} tokens • ComfyUI Flags: <code>{" ".join(lb_prof["comfyui_cli_flags"]) or "Native Metal"}</code>'
             f'</div>'
             f'</div>'
         )
@@ -1228,92 +1421,161 @@ def render_diagnostics_section():
                                 except Exception as e:
                                     st.error(f"Failed to remove model: {e}")
 
-        # Pull model form
-        with st.form("pull_model_form"):
-            new_model_name = st.text_input("Install New Model from Ollama Registry", placeholder="e.g. qwen2.5:14b or qwen2.5-coder:7b")
-            pull_btn = st.form_submit_button("📥 Pull Model via Ollama")
+        # State tracking for multi-pull input
+        if "multi_pull_input" not in st.session_state:
+            st.session_state["multi_pull_input"] = ""
 
-        if pull_btn and new_model_name and new_model_name.strip():
-            target_model = new_model_name.strip()
-            model_download_manager.start_download(target_model)
+        # Quick-add pills for popular models
+        st.markdown("<div style='font-size: 0.78rem; font-weight: 700; color: #64748b; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.04em;'>⚡ Quick-Queue Popular Models (Click to Add):</div>", unsafe_allow_html=True)
+        qcols = st.columns(6)
+        quick_models = ["qwen2.5:14b", "llama3.2:latest", "deepseek-r1:14b", "gemma2:9b", "mistral:7b", "phi4:14b"]
+        for i, qm in enumerate(quick_models):
+            with qcols[i]:
+                if st.button(f"+ {qm}", key=f"quick_model_{qm}", use_container_width=True):
+                    current_models = parse_model_names(st.session_state["multi_pull_input"])
+                    if qm not in current_models:
+                        current_models.append(qm)
+                        st.session_state["multi_pull_input"] = ", ".join(current_models)
+                    st.rerun()
+
+        # Multi-model pull form
+        with st.form("pull_model_form"):
+            new_model_name = st.text_input(
+                "Install New Model(s) from Ollama Registry (Batch / Multiple Models Supported)",
+                value=st.session_state.get("multi_pull_input", ""),
+                placeholder="e.g. qwen2.5:14b, llama3.2:latest, mistral:7b (separated by commas, spaces, or newlines)",
+                help="Enter one or multiple model tags separated by commas, spaces, or newlines to download simultaneously in parallel."
+            )
+            parsed_targets = parse_model_names(new_model_name)
+            num_targets = len(parsed_targets)
+            btn_label = f"📥 Pull {num_targets} Models in Parallel" if num_targets > 1 else "📥 Pull Model via Ollama"
+            pull_btn = st.form_submit_button(btn_label, use_container_width=True)
+
+        if pull_btn and parsed_targets:
+            model_download_manager.start_multiple_downloads(parsed_targets)
+            st.session_state["multi_pull_input"] = ""
             st.rerun()
 
-        # Background Download Monitor with Stop/Cancel & Cross-Tab Persistence
+        # Background Download Monitor with Multi-Job Tracking & Real-Time Controls
         @st.fragment(run_every="1s")
         def render_download_progress_monitor():
-            job = model_download_manager.get_active_or_latest_job()
-            if not job:
+            all_jobs = model_download_manager.get_all_active_or_recent_jobs()
+            if not all_jobs:
                 return
 
-            m_name = job["model"]
-            st_val = job["status"]
-            pct = job.get("percent", 0.0)
-            detail = job.get("detail", "")
-            is_ind = job.get("is_indeterminate", False)
+            active_jobs = [j for j in all_jobs if j["status"] == "downloading"]
+            finished_jobs = [j for j in all_jobs if j["status"] in ["complete", "stopped", "error"]]
 
-            if st_val == "downloading":
-                col_pb, col_stop = st.columns([3.8, 1.2])
-                with col_pb:
-                    st.markdown(
-                        render_winxp_progress_bar(
-                            percent=pct,
-                            status="downloading",
-                            detail=detail,
-                            is_indeterminate=is_ind
-                        ),
-                        unsafe_allow_html=True
-                    )
-                with col_stop:
-                    st.write("")
-                    st.write("")
-                    if st.button("⏹️ Stop / Cancel", key=f"stop_dl_btn_{m_name}", type="secondary", use_container_width=True):
-                        model_download_manager.stop_download(m_name)
-                        st.rerun()
+            st.write("")
+            st.divider()
 
-            elif st_val == "complete":
-                col_pb, col_ack = st.columns([3.8, 1.2])
-                with col_pb:
-                    st.markdown(
-                        render_winxp_progress_bar(
-                            percent=100.0,
-                            status="complete",
-                            detail=f"Model '{m_name}' successfully installed and ready for inference.",
-                            is_indeterminate=False
-                        ),
-                        unsafe_allow_html=True
-                    )
-                with col_ack:
-                    st.write("")
-                    st.write("")
-                    if st.button("✔ Dismiss", key=f"ack_dl_btn_{m_name}", type="primary", use_container_width=True):
-                        model_download_manager.dismiss_job(m_name)
-                        get_cached_models.clear()
-                        st.rerun()
+            # Clean native Streamlit header with count pills
+            active_badge = f"<span style='font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; background: #e0f2fe; color: #0284c7; font-weight: 600; vertical-align: middle; margin-left: 6px;'>{len(active_jobs)} Active</span>" if active_jobs else ""
+            finished_badge = f"<span style='font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; background: #dcfce7; color: #16a34a; font-weight: 600; vertical-align: middle; margin-left: 6px;'>{len(finished_jobs)} Finished</span>" if finished_jobs else ""
+            st.markdown(f"##### 📥 Background Model Downloads {active_badge} {finished_badge}", unsafe_allow_html=True)
 
-            elif st_val == "stopped":
-                col_pb, col_ack = st.columns([3.8, 1.2])
-                with col_pb:
-                    st.markdown(
-                        render_winxp_progress_bar(
-                            percent=pct,
-                            status="stopped",
-                            detail=f"Download stopped by user ({pct:.1f}%).",
-                            is_indeterminate=False
-                        ),
-                        unsafe_allow_html=True
-                    )
-                with col_ack:
-                    st.write("")
-                    st.write("")
-                    if st.button("✕ Dismiss", key=f"dismiss_stopped_{m_name}", use_container_width=True):
-                        model_download_manager.dismiss_job(m_name)
-                        st.rerun()
+            # Global action buttons when multiple downloads exist
+            if len(all_jobs) > 1:
+                c_all_stop, c_all_dism = st.columns([1, 1])
+                with c_all_stop:
+                    if active_jobs:
+                        if st.button("⏹️ Stop All Active Downloads", key="btn_stop_all_dls", type="secondary", use_container_width=True):
+                            model_download_manager.stop_all_downloads()
+                            st.rerun()
+                with c_all_dism:
+                    if finished_jobs:
+                        if st.button("✔ Dismiss All Finished", key="btn_dism_all_finished", type="primary", use_container_width=True):
+                            model_download_manager.dismiss_all_finished()
+                            get_cached_models.clear()
+                            st.rerun()
 
-            elif st_val == "error":
-                st.error(f"❌ Failed to download model '{m_name}': {job.get('error', 'Unknown error')}")
-                if st.button("✕ Dismiss Error", key=f"dismiss_err_{m_name}"):
-                    model_download_manager.dismiss_job(m_name)
-                    st.rerun()
+            # Render individual progress card for each model
+            for job in all_jobs:
+                m_name = job["model"]
+                st_val = job["status"]
+                pct = job.get("percent", 0.0)
+                detail = job.get("detail", "")
+                is_ind = job.get("is_indeterminate", False)
+
+                col_j_title, col_j_badge = st.columns([3.5, 1.5])
+                with col_j_title:
+                    st.markdown(f"📦 **`{m_name}`**")
+                with col_j_badge:
+                    if st_val == "downloading":
+                        st.markdown("<div style='text-align: right;'><span style='font-size: 0.72rem; padding: 2px 8px; border-radius: 10px; background: #e0f2fe; color: #0284c7; font-weight: 600;'>🔵 Downloading</span></div>", unsafe_allow_html=True)
+                    elif st_val == "complete":
+                        st.markdown("<div style='text-align: right;'><span style='font-size: 0.72rem; padding: 2px 8px; border-radius: 10px; background: #dcfce7; color: #16a34a; font-weight: 600;'>🟢 Complete</span></div>", unsafe_allow_html=True)
+                    elif st_val == "stopped":
+                        st.markdown("<div style='text-align: right;'><span style='font-size: 0.72rem; padding: 2px 8px; border-radius: 10px; background: #fef3c7; color: #d97706; font-weight: 600;'>🟠 Stopped</span></div>", unsafe_allow_html=True)
+                    else:
+                        st.markdown("<div style='text-align: right;'><span style='font-size: 0.72rem; padding: 2px 8px; border-radius: 10px; background: #fee2e2; color: #dc2626; font-weight: 600;'>🔴 Error</span></div>", unsafe_allow_html=True)
+
+                if st_val == "downloading":
+                    col_pb, col_stop = st.columns([4.0, 1.0])
+                    with col_pb:
+                        st.markdown(
+                            render_winxp_progress_bar(
+                                percent=pct,
+                                status="downloading",
+                                detail=detail,
+                                is_indeterminate=is_ind
+                            ),
+                            unsafe_allow_html=True
+                        )
+                    with col_stop:
+                        st.write("")
+                        st.write("")
+                        if st.button("⏹️ Stop", key=f"stop_dl_btn_{m_name}", type="secondary", use_container_width=True):
+                            model_download_manager.stop_download(m_name)
+                            st.rerun()
+
+                elif st_val == "complete":
+                    col_pb, col_ack = st.columns([4.0, 1.0])
+                    with col_pb:
+                        st.markdown(
+                            render_winxp_progress_bar(
+                                percent=100.0,
+                                status="complete",
+                                detail=f"Model '{m_name}' successfully installed and ready for inference.",
+                                is_indeterminate=False
+                            ),
+                            unsafe_allow_html=True
+                        )
+                    with col_ack:
+                        st.write("")
+                        st.write("")
+                        if st.button("✔ Dismiss", key=f"ack_dl_btn_{m_name}", type="primary", use_container_width=True):
+                            model_download_manager.dismiss_job(m_name)
+                            get_cached_models.clear()
+                            st.rerun()
+
+                elif st_val == "stopped":
+                    col_pb, col_ack = st.columns([4.0, 1.0])
+                    with col_pb:
+                        st.markdown(
+                            render_winxp_progress_bar(
+                                percent=pct,
+                                status="stopped",
+                                detail=f"Download stopped by user ({pct:.1f}%).",
+                                is_indeterminate=False
+                            ),
+                            unsafe_allow_html=True
+                        )
+                    with col_ack:
+                        st.write("")
+                        st.write("")
+                        if st.button("✕ Dismiss", key=f"dismiss_stopped_{m_name}", use_container_width=True):
+                            model_download_manager.dismiss_job(m_name)
+                            st.rerun()
+
+                elif st_val == "error":
+                    col_err, col_ack = st.columns([4.0, 1.0])
+                    with col_err:
+                        st.error(f"❌ Failed to download '{m_name}': {job.get('error', 'Unknown error')}")
+                    with col_ack:
+                        if st.button("✕ Dismiss", key=f"dismiss_err_{m_name}", use_container_width=True):
+                            model_download_manager.dismiss_job(m_name)
+                            st.rerun()
 
         render_download_progress_monitor()
 
@@ -1555,8 +1817,15 @@ def render_image_generation_section():
 # ---------------------------------------------------------
 # TOP BRAND BANNER
 # ---------------------------------------------------------
-active_dl = model_download_manager.get_active_job()
-active_dl_html = f'<span class="brand-pill pill-indigo">⬇️ Downloading {active_dl["model"]} ({active_dl["percent"]:.0f}%)</span>' if active_dl else ""
+active_dls = model_download_manager.get_active_jobs()
+if len(active_dls) == 1:
+    active_dl_html = f'<span class="brand-pill pill-indigo">⬇️ Downloading {active_dls[0]["model"]} ({active_dls[0]["percent"]:.0f}%)</span>'
+elif len(active_dls) > 1:
+    models_summary = ", ".join(f'{d["model"]} ({d["percent"]:.0f}%)' for d in active_dls[:2])
+    extra = f" +{len(active_dls)-2}" if len(active_dls) > 2 else ""
+    active_dl_html = f'<span class="brand-pill pill-indigo">⬇️ Downloading {len(active_dls)} models: {models_summary}{extra}</span>'
+else:
+    active_dl_html = ""
 
 brand_banner_html = (
     '<div class="brand-container">'
@@ -1687,14 +1956,18 @@ if selected_page == "💬 All-in-One Studio":
 
     # Render Conversation History
     for idx, msg in enumerate(st.session_state.messages):
+        # Skip empty / blank assistant messages
+        if msg.get("role") == "assistant" and not (msg.get("content") or "").strip():
+            continue
         with st.chat_message(msg["role"]):
             if msg.get("images"):
                 cols_hist = st.columns(min(len(msg["images"]), 3))
                 for i, img_data in enumerate(msg["images"]):
                     cols_hist[i % len(cols_hist)].image(img_data, use_container_width=True)
-            st.markdown(msg["content"], unsafe_allow_html=True)
             if msg.get("role") == "assistant" and is_report_content(msg.get("content", "")):
-                render_report_export_toolbar(msg["content"], key_prefix=f"hist_rep_{idx}")
+                render_executive_report_view(msg["content"], default_title=active_title, key_prefix=f"hist_rep_{idx}")
+            else:
+                st.markdown(msg["content"], unsafe_allow_html=True)
 
     # Chat Input Box (Native paperclip support for uploading up to 5 files)
     default_prompt = st.session_state.pop("prompt_input", "")
@@ -1825,39 +2098,58 @@ if selected_page == "💬 All-in-One Studio":
                 save_chat_message(st.session_state["active_conv_id"], "assistant", response_text)
                 st.session_state.messages.append({"role": "assistant", "content": response_text})
 
-            # Check for inline /report command
-            elif prompt_to_use.strip().startswith("/report "):
-                report_title = prompt_to_use.strip()[8:].strip()
+            # Check for report generation command or natural language report/PDF request
+            is_rep, report_title, rep_scope, rep_attached_ctx = detect_report_request(
+                prompt_to_use, attached_docs_context, st.session_state.messages
+            )
+
+            if prompt_to_use.strip().startswith("/image "):
+                # (handled above)
+                pass
+
+            elif is_rep:
                 status_box = st.empty()
                 status_box.markdown(
-                    render_thinking_badge("analysing", f"Analysing codebase architecture for '{report_title}'..."),
+                    render_thinking_badge("analysing", f"Evaluating technical architecture and diagnostics for '{report_title}'..."),
                     unsafe_allow_html=True
                 )
                 
-                # Inject active memories into report prompt
-                memory_block = "\n".join([f"- [{m.get('source_tool', 'custom').upper()}] {m['key']}: {m['content']}" for m in active_memories])
-                full_system = f"{system_instruction}\n\n### Active Long-Term Memories:\n{memory_block}" if memory_block else system_instruction
-                
+                from app.services.report_generator_service import (
+                    EXECUTIVE_SYSTEM_PROMPT, build_executive_report_prompt, style_report_markdown
+                )
+
                 status_box.markdown(
-                    render_thinking_badge("processing", f"Synthesizing executive report sections with {selected_model}..."),
+                    render_thinking_badge("processing", f"Synthesizing customer-ready executive report with {selected_model}..."),
                     unsafe_allow_html=True
                 )
 
-                rep_prompt = f"Generate a comprehensive, professional executive report titled '{report_title}'. Include Executive Summary, Architecture Overview, Key Findings, and Actionable Recommendations."
-                response = run_async(ollama_service.generate(
-                    model=selected_model,
-                    prompt=rep_prompt,
-                    system=full_system,
-                    temperature=temperature,
-                    context_length=context_tokens
-                ))
-                rep_text = getattr(response, "response", None) or (response.get("response") if isinstance(response, dict) else str(response))
-                report_content = f"## 📄 {report_title}\n\n---\n\n{rep_text}"
-                status_box.empty()
-                st.markdown(report_content)
-                render_report_export_toolbar(report_content, default_title=report_title, key_prefix="live_rep")
-                save_chat_message(st.session_state["active_conv_id"], "assistant", report_content)
-                st.session_state.messages.append({"role": "assistant", "content": report_content})
+                exec_prompt = build_executive_report_prompt(
+                    report_title=report_title,
+                    scope=rep_scope,
+                    active_memories=active_memories,
+                    attached_context=rep_attached_ctx
+                )
+
+                try:
+                    response = run_async(ollama_service.generate(
+                        model=selected_model,
+                        prompt=exec_prompt,
+                        system=EXECUTIVE_SYSTEM_PROMPT,
+                        temperature=0.3,
+                        context_length=max(context_tokens, 8192)
+                    ))
+                    rep_text = getattr(response, "response", None) or (response.get("response") if isinstance(response, dict) else str(response))
+                    rep_text = rep_text.strip()
+                    status_box.empty()
+                    render_executive_report_view(rep_text, default_title=report_title, key_prefix="live_rep")
+                    save_chat_message(st.session_state["active_conv_id"], "assistant", rep_text)
+                    st.session_state.messages.append({"role": "assistant", "content": rep_text})
+                except Exception as e:
+                    status_box.empty()
+                    err_msg = f"⚠️ Could not generate report with `{selected_model}`: {str(e)}"
+                    st.error(err_msg)
+                    save_chat_message(st.session_state["active_conv_id"], "assistant", err_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": err_msg})
 
             # Check for inline /code command
             elif prompt_to_use.strip().startswith("/code "):
@@ -1895,84 +2187,103 @@ if selected_page == "💬 All-in-One Studio":
 
             # Check for inline /pull or /install command
             elif prompt_to_use.strip().startswith(("/pull ", "/install ")):
-                pull_target = prompt_to_use.strip().split(maxsplit=1)[1].strip()
-                status_box = st.empty()
-                pull_state = {"status": "downloading", "pct": 0.0}
-                
-                async def chat_pull_stream():
-                    status_box.markdown(
-                        render_winxp_progress_bar(
-                            percent=0.0,
-                            status="downloading",
-                            detail=f"Contacting Ollama registry for '{pull_target}'...",
-                            is_indeterminate=True
-                        ),
-                        unsafe_allow_html=True
+                pull_target_raw = prompt_to_use.strip().split(maxsplit=1)[1].strip()
+                parsed_pulls = parse_model_names(pull_target_raw)
+                if not parsed_pulls:
+                    parsed_pulls = [pull_target_raw]
+
+                if len(parsed_pulls) > 1:
+                    model_download_manager.start_multiple_downloads(parsed_pulls)
+                    models_badges = " • ".join(f"`{m}`" for m in parsed_pulls)
+                    out_msg = (
+                        f"### 📦 Multi-Model Background Download Started\n\n"
+                        f"Initiated concurrent background downloads for **{len(parsed_pulls)} models**:\n\n"
+                        f"{models_badges}\n\n"
+                        f"- ⚡ All models are downloading concurrently in independent background threads.\n"
+                        f"- 📊 Monitor live WinXP progress bars and cancel/stop controls in **More → Engines & Diagnostics**."
                     )
-                    async for chunk in ollama_service.pull_model(pull_target):
-                        st_val = chunk.get("status", "downloading")
-                        completed = chunk.get("completed", 0)
-                        total = chunk.get("total", 0)
-                        pct = chunk.get("percent")
-
-                        if pct is not None:
-                            pull_state["pct"] = float(pct)
-                            is_ind = False
-                        elif total and completed and total > 0:
-                            pull_state["pct"] = round((completed / total) * 100, 1)
-                            is_ind = False
-                        else:
-                            is_ind = (st_val != "success")
-
-                        detail_str = st_val
-                        if total > 0:
-                            comp_mb = round(completed / (1024 * 1024), 1)
-                            tot_mb = round(total / (1024 * 1024), 1)
-                            detail_str = f"{st_val} ({comp_mb} MB / {tot_mb} MB)"
-
-                        if st_val == "success":
-                            pull_state["status"] = "complete"
-                            pull_state["pct"] = 100.0
-                            status_box.markdown(
-                                render_winxp_progress_bar(
-                                    percent=100.0,
-                                    status="complete",
-                                    detail=f"Model '{pull_target}' successfully installed.",
-                                    is_indeterminate=False
-                                ),
-                                unsafe_allow_html=True
-                            )
-                            break
-                        else:
-                            pull_state["status"] = "downloading"
-                            status_box.markdown(
-                                render_winxp_progress_bar(
-                                    percent=pull_state["pct"],
-                                    status="downloading",
-                                    detail=detail_str,
-                                    is_indeterminate=is_ind
-                                ),
-                                unsafe_allow_html=True
-                            )
-
-                try:
-                    run_async(chat_pull_stream())
-                    final_html = render_winxp_progress_bar(
-                        percent=100.0,
-                        status="complete",
-                        detail=f"Model '{pull_target}' successfully installed into local registry.",
-                        is_indeterminate=False
-                    )
-                    status_box.markdown(final_html, unsafe_allow_html=True)
-                    out_msg = f"### 📦 Model Download\n\n{final_html}\n\nModel `{pull_target}` is now installed and ready for inference."
+                    st.markdown(out_msg)
                     save_chat_message(st.session_state["active_conv_id"], "assistant", out_msg)
                     st.session_state.messages.append({"role": "assistant", "content": out_msg})
-                except Exception as e:
-                    status_box.empty()
-                    err_msg = f"❌ Failed to download model `{pull_target}`: {e}"
-                    st.error(err_msg)
-                    save_chat_message(st.session_state["active_conv_id"], "assistant", err_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": err_msg})
+                else:
+                    pull_target = parsed_pulls[0]
+                    status_box = st.empty()
+                    pull_state = {"status": "downloading", "pct": 0.0}
+                    
+                    async def chat_pull_stream():
+                        status_box.markdown(
+                            render_winxp_progress_bar(
+                                percent=0.0,
+                                status="downloading",
+                                detail=f"Contacting Ollama registry for '{pull_target}'...",
+                                is_indeterminate=True
+                            ),
+                            unsafe_allow_html=True
+                        )
+                        async for chunk in ollama_service.pull_model(pull_target):
+                            st_val = chunk.get("status", "downloading")
+                            completed = chunk.get("completed", 0)
+                            total = chunk.get("total", 0)
+                            pct = chunk.get("percent")
+
+                            if pct is not None:
+                                pull_state["pct"] = float(pct)
+                                is_ind = False
+                            elif total and completed and total > 0:
+                                pull_state["pct"] = round((completed / total) * 100, 1)
+                                is_ind = False
+                            else:
+                                is_ind = (st_val != "success")
+
+                            detail_str = st_val
+                            if total > 0:
+                                comp_mb = round(completed / (1024 * 1024), 1)
+                                tot_mb = round(total / (1024 * 1024), 1)
+                                detail_str = f"{st_val} ({comp_mb} MB / {tot_mb} MB)"
+
+                            if st_val == "success":
+                                pull_state["status"] = "complete"
+                                pull_state["pct"] = 100.0
+                                status_box.markdown(
+                                    render_winxp_progress_bar(
+                                        percent=100.0,
+                                        status="complete",
+                                        detail=f"Model '{pull_target}' successfully installed.",
+                                        is_indeterminate=False
+                                    ),
+                                    unsafe_allow_html=True
+                                )
+                                break
+                            else:
+                                pull_state["status"] = "downloading"
+                                status_box.markdown(
+                                    render_winxp_progress_bar(
+                                        percent=pull_state["pct"],
+                                        status="downloading",
+                                        detail=detail_str,
+                                        is_indeterminate=is_ind
+                                    ),
+                                    unsafe_allow_html=True
+                                )
+
+                    try:
+                        run_async(chat_pull_stream())
+                        final_html = render_winxp_progress_bar(
+                            percent=100.0,
+                            status="complete",
+                            detail=f"Model '{pull_target}' successfully installed into local registry.",
+                            is_indeterminate=False
+                        )
+                        status_box.markdown(final_html, unsafe_allow_html=True)
+                        out_msg = f"### 📦 Model Download\n\n{final_html}\n\nModel `{pull_target}` is now installed and ready for inference."
+                        save_chat_message(st.session_state["active_conv_id"], "assistant", out_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": out_msg})
+                    except Exception as e:
+                        status_box.empty()
+                        err_msg = f"❌ Failed to download model `{pull_target}`: {e}"
+                        st.error(err_msg)
+                        save_chat_message(st.session_state["active_conv_id"], "assistant", err_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": err_msg})
 
             # Standard Chat Inference
             else:
@@ -2014,20 +2325,47 @@ if selected_page == "💬 All-in-One Studio":
                         unsafe_allow_html=True
                     )
 
-                    # Phase 3: Token streaming from Ollama
+                    thinking_parts = []
+
+                    # Phase 3: Token streaming from Ollama with real-time reasoning animation
                     async def stream_to_ui():
-                        async for chunk in ollama_service.chat_stream(
+                        async for event in ollama_service.chat_stream_detailed(
                             model=selected_model,
                             messages=ollama_messages,
                             temperature=temperature,
                             context_length=context_tokens
                         ):
-                            full_response_parts.append(chunk)
-                            response_placeholder.markdown("".join(full_response_parts) + "▌")
-                        response_placeholder.markdown("".join(full_response_parts))
+                            if event["type"] == "thinking":
+                                thinking_parts.append(event["text"])
+                                recent_th = "".join(thinking_parts)[-90:].replace("\n", " ").strip()
+                                response_placeholder.markdown(
+                                    render_thinking_badge("thinking", f"Reasoning ({selected_model}): {recent_th}..."),
+                                    unsafe_allow_html=True
+                                )
+                            elif event["type"] == "content":
+                                full_response_parts.append(event["text"])
+                                response_placeholder.markdown("".join(full_response_parts) + "▌")
+
+                        final_preview = "".join(full_response_parts)
+                        if not final_preview and thinking_parts:
+                            final_preview = f"**Diagnostic Analysis & Findings:**\n\n{''.join(thinking_parts).strip()}"
+                        if final_preview:
+                            response_placeholder.markdown(final_preview)
 
                     run_async(stream_to_ui())
-                    full_response = "".join(full_response_parts)
+                    full_response = "".join(full_response_parts).strip()
+                    if not full_response and thinking_parts:
+                        full_response = f"**Diagnostic Analysis & Findings:**\n\n{''.join(thinking_parts).strip()}"
+
+                    if not full_response:
+                        full_response = "⚠️ The inference completed without generating content. Please retry or adjust model parameters."
+
+                    if is_report_content(full_response):
+                        response_placeholder.empty()
+                        render_executive_report_view(full_response, default_title=active_title, key_prefix="live_chat_rep")
+                    else:
+                        response_placeholder.markdown(full_response)
+
                     save_chat_message(st.session_state["active_conv_id"], "assistant", full_response)
                     st.session_state.messages.append({"role": "assistant", "content": full_response})
 
@@ -2055,12 +2393,29 @@ elif selected_page in ["⚙️ More", "More", "⚙️ Settings"]:
     st.markdown("### ⚙️ More — Workspace, Engines & Tools")
     st.caption("Configure local model inference parameters, system instructions, AI tool memories, background engines, and image generation.")
 
-    tab_inf, tab_mem, tab_diag, tab_img = st.tabs([
+    req_tab = st.query_params.get("tab")
+    tab_titles = [
         "🤖 Model & Inference",
         "🧠 AI Memory Hub",
         "⚡ Engines & Diagnostics",
         "🎨 Image Generation"
-    ])
+    ]
+    if req_tab:
+        matched = [t for t in tab_titles if req_tab.lower() in t.lower()]
+        if matched:
+            other = [t for t in tab_titles if t != matched[0]]
+            tab_titles = [matched[0]] + other
+
+    tabs = st.tabs(tab_titles)
+    for title, t_obj in zip(tab_titles, tabs):
+        if "Model" in title:
+            tab_inf = t_obj
+        elif "Memory" in title:
+            tab_mem = t_obj
+        elif "Diagnostics" in title:
+            tab_diag = t_obj
+        elif "Image" in title:
+            tab_img = t_obj
 
     with tab_inf:
         st.markdown("#### 🤖 Model Inference Parameters")

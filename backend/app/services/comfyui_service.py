@@ -392,6 +392,20 @@ class ComfyUIService:
                     return True
                 if self._process.poll() is not None:
                     logger.error(f"ComfyUI process exited prematurely with code {self._process.returncode}")
+                    # Automatic resilient fallback to CPU mode if GPU acceleration initialization fails
+                    if "--cpu" not in cmd:
+                        logger.warning("Attempting automatic resilient fallback to CPU mode (--cpu --use-split-cross-attention)...")
+                        fallback_cmd = [python_exe, str(self.comfy_main), "--listen", "127.0.0.1", "--port", "8188", "--cpu", "--use-split-cross-attention"]
+                        log_file.write(f"\n--- ComfyUI fallback to CPU mode at {datetime.datetime.now().isoformat()} with cmd: {' '.join(fallback_cmd)} ---\n")
+                        log_file.flush()
+                        self._process = subprocess.Popen(fallback_cmd, **popen_kwargs)
+                        for _ in range(20):
+                            await asyncio.sleep(1.0)
+                            if await self.is_server_reachable():
+                                logger.info("ComfyUI launched and verified reachable on http://127.0.0.1:8188 (CPU Mode).")
+                                return True
+                            if self._process.poll() is not None:
+                                break
                     return False
 
             # Still booting in background

@@ -54,15 +54,25 @@ class ReportService:
             additional_context = f"### Test Suite Execution Output:\n```\n{str(test_output)[:3000]}\n```\n"
 
         # 2. Formulate high-quality system and user prompts
-        system_prompt = (
-            "You are an elite enterprise analyst, technical architect, and principal researcher. "
-            "You specialize in authoring high-density, authoritative, beautifully structured Markdown reports. "
-            "Always include: Executive Summary, Clear Section Headers, Markdown Tables where relevant, "
-            "Quantitative Assessment, Risk or Limitation Analysis, and Prioritized Actionable Recommendations. "
-            "Do not output conversational greetings; output the report content directly."
-        )
+        if req.report_type in ["executive_summary", "executive"]:
+            from app.services.report_generator_service import (
+                EXECUTIVE_SYSTEM_PROMPT, build_executive_report_prompt, style_report_markdown
+            )
+            system_prompt = EXECUTIVE_SYSTEM_PROMPT
+            user_prompt = build_executive_report_prompt(
+                report_title=req.title,
+                scope=f"{req.topic_description}\n\n{additional_context}".strip()
+            )
+        else:
+            system_prompt = (
+                "You are an elite enterprise analyst, technical architect, and principal researcher. "
+                "You specialize in authoring high-density, authoritative, beautifully structured Markdown reports. "
+                "Always include: Executive Summary, Clear Section Headers, Markdown Tables where relevant, "
+                "Quantitative Assessment, Risk or Limitation Analysis, and Prioritized Actionable Recommendations. "
+                "Do not output conversational greetings; output the report content directly."
+            )
 
-        user_prompt = f"""
+            user_prompt = f"""
 # REQUEST: GENERATE FORMAL {req.report_type.upper().replace('_', ' ')} REPORT
 
 **Report Title:** {req.title}
@@ -91,6 +101,9 @@ Please structure the report with:
                 options={"temperature": 0.3}
             )
             content = res.get("message", {}).get("content", "").strip()
+            if req.report_type in ["executive_summary", "executive"]:
+                from app.services.report_generator_service import style_report_markdown
+                content = style_report_markdown(content)
         except Exception as e:
             logger.error(f"Error generating report via LLM: {e}")
             raise RuntimeError(f"Report generation failed: {e}")
